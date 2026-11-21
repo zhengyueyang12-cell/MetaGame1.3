@@ -916,14 +916,16 @@ export function buildApartmentStructure(ctx: RoomBuildContext): void {
   addWall('wall_entry_din_s', -2.70, H / 2, 6.29, 0.16, H, 1.08, diningWallMat);
   addWall('wall_entry_din_hdr', -2.70, 2.75, 4.35, 0.16, 0.7, 2.86, diningWallMat);
 
-  // Architectural Corner Trim Posts at key interior wall junctions so every corner is crisp & gap-free
-  for (const [cx, cz] of [
-    [-1.22, 0.25],
-    [-2.70, 0.25],
-    [-2.70, 2.45],
-  ]) {
+  // Architectural Corner Trim Posts at key interior wall junctions
+  // Kept strictly clear of Bedroom interior faces (Z <= 0.17, X <= -1.30) so no stray wooden board pokes into the Bedroom wall!
+  const cornerPostSpecs: [number, number, number, number][] = [
+    [-1.185, 0.285, 0.125, 0.125], // Living/Dining junction (strictly East & South of Bedroom corner!)
+    [-2.70, 0.295, 0.185, 0.105],  // Dining/Stairwell junction (strictly South of Bedroom wall Z = 0.17!)
+    [-2.70, 2.45, 0.195, 0.195],   // Entryway/Dining/Stairwell junction
+  ];
+  for (const [cx, cz, pw, pd] of cornerPostSpecs) {
     const cornerPost = new THREE.Mesh(
-      createBeveledBox(0.195, H, 0.195, 0.014, 3),
+      createBeveledBox(pw, H, pd, 0.012, 3),
       wainscotTrimMat
     );
     cornerPost.position.set(cx, H / 2, cz);
@@ -1733,11 +1735,11 @@ export function buildApartmentStructure(ctx: RoomBuildContext): void {
     });
   };
 
-  // Living Room recessed tray subtle warm-white ambient emitter (concealed cleanly inside the Flat Plastic Ceiling Lamp!)
+  // Living Room recessed tray subtle warm-white ambient emitter (concealed cleanly inside the vintage fan brass canopy)
   {
     const livBulbMat = new THREE.MeshBasicMaterial({ color: 0xfff4e2 });
     const livCanopyGlow = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.11, 0.11, 0.008, 16),
+      new THREE.CylinderGeometry(0.045, 0.045, 0.006, 12),
       livBulbMat
     );
     livCanopyGlow.position.set(3.12, 3.276, -5.08);

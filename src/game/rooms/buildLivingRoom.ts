@@ -609,19 +609,25 @@ export function buildLivingRoom(
     const safeMaxH = Math.max(0.155, maxHeight - 0.022);
     const safeMaxD = Math.max(0.125, maxDepth - 0.025);
 
-    // Optionally reserve space at the right end of the shelf for a cozy horizontal book stack (+ retro cartridge)
-    let uprightEnd = end;
-    const stackSpan = 0.178;
-    const doStack = includeHorizontalStack && end - start > 0.36;
-    if (doStack) {
-      uprightEnd = end - stackSpan - 0.024;
-    }
+    // Airy ~48%–56% lived-in fill ratio so shelves never look crammed wall-to-wall!
+    const totalSpan = Math.max(0.16, end - start);
+    const fillRatio = 0.46 + nextRand() * 0.12;
+    const alignRight = nextRand() > 0.56;
+    const activeSpan = totalSpan * fillRatio;
 
-    let cursor = start + 0.008;
+    // Optionally reserve space on the open side for a compact 2-book horizontal stack (+ retro cartridge)
+    const stackSpan = 0.155;
+    const doStack = includeHorizontalStack && totalSpan > 0.42 && nextRand() > 0.35;
+    const uprightBudget = Math.max(0.12, doStack ? activeSpan * 0.72 : activeSpan);
 
-    // 1) Consecutive matched Manga set (3-4 slim tankobon volumes side-by-side)
-    if (includeMangaSet && uprightEnd - cursor > 0.11) {
-      const volCount = nextRand() > 0.42 ? 4 : 3;
+    let cursor = alignRight
+      ? end - uprightBudget - 0.014
+      : start + 0.012 + nextRand() * Math.min(0.04, totalSpan * 0.08);
+    const uprightEnd = Math.min(end - 0.012, cursor + uprightBudget);
+
+    // 1) Consecutive matched Manga set (3 slim Japanese tankobon volumes side-by-side)
+    if (includeMangaSet && uprightEnd - cursor > 0.085) {
+      const volCount = nextRand() > 0.55 ? 4 : 3;
       const baseMangaH = Math.min(safeMaxH, 0.172 + nextRand() * 0.008);
       const baseMangaD = Math.min(safeMaxD, 0.128 + nextRand() * 0.008);
       for (let v = 0; v < volCount; v++) {
@@ -634,13 +640,13 @@ export function buildLivingRoom(
         placeItem(cursor + thick * 0.5, surfaceY + h * 0.5, depthStagger, bk, 0);
         cursor += thick + 0.0022;
       }
-      cursor += 0.008;
+      cursor += 0.010;
     }
 
     // 2) Mixed Literature, Philosophy, Technical/Design books & Retro Game Cases/Cartridges
     let itemCount = 0;
     let placedCartridge = false;
-    while (cursor < uprightEnd - 0.036) {
+    while (cursor < uprightEnd - 0.032) {
       const remaining = uprightEnd - cursor;
       const roll = nextRand();
 
@@ -745,11 +751,13 @@ export function buildLivingRoom(
       if (isLast) break;
     }
 
-    // 3) Cozy Horizontal Stack of 2-3 books (plus optional pastel retro cartridge on top)
+    // 3) Compact Horizontal Stack of 2 books tucked gracefully into the airy open half
     if (doStack) {
-      const stackCenter = end - stackSpan * 0.5 - 0.008;
+      const stackCenter = alignRight
+        ? start + stackSpan * 0.5 + 0.032
+        : end - stackSpan * 0.5 - 0.024;
       let stackY = surfaceY;
-      const stackCount = nextRand() > 0.45 ? 3 : 2;
+      const stackCount = 2;
       for (let s = 0; s < stackCount; s++) {
         const flatW = Math.min(stackSpan, 0.168 - s * 0.012);
         const flatD = Math.min(safeMaxD, 0.142 - s * 0.008);
@@ -4828,17 +4836,70 @@ export function buildLivingRoom(
     vinylCabinet.add(wireRodTop);
   }
 
-  // Right Horizontal Shelf at Y = 0.50 -> Two balanced modern bookshelf cubbies
-  const rightMidShelf = new THREE.Mesh(
-    createBeveledBox(0.46, 0.024, cabD - 0.036, 0.005, 2),
-    oakMat
-  );
-  rightMidShelf.position.set(0.422, 0.50, 0.004);
-  rightMidShelf.castShadow = true;
-  rightMidShelf.receiveShadow = true;
-  vinylCabinet.add(rightMidShelf);
+  // Rightmost Bay Enclosed with a Modern Flush-Inset Honey-Oak Cabinet Door + Brushed-Brass Pull Handle
+  // Bay spans X = 0.192 .. 0.650 (width 0.458), Y = 0.188 .. 0.808 (height 0.620), front Z = cabD / 2
+  {
+    const doorW = 0.446;
+    const doorH = 0.610;
+    const doorCX = 0.422;
+    const doorCY = 0.498;
+    const doorZ = cabD * 0.5 - 0.009;
 
-  // PACK THE TWO TALL VINYL CUBBIES WITH COLORFUL, ORGANICALLY OFFSET 12-INCH VINYL LP RECORDS
+    const cabDoorGroup = new THREE.Group();
+    cabDoorGroup.position.set(doorCX, doorCY, doorZ);
+
+    // Subtle recessed dark shadow reveal behind the flush-inset door edge (clean modern gap!)
+    const doorReveal = new THREE.Mesh(
+      new THREE.BoxGeometry(doorW + 0.008, doorH + 0.008, 0.006),
+      cavityDarkMat
+    );
+    doorReveal.position.z = -0.009;
+    cabDoorGroup.add(doorReveal);
+
+    // Main beveled warm honey-oak cabinet door slab
+    const doorPanel = new THREE.Mesh(
+      createBeveledBox(doorW, doorH, 0.020, 0.005, 2),
+      oakMat
+    );
+    doorPanel.castShadow = true;
+    doorPanel.receiveShadow = true;
+    outlines.addOutline(doorPanel, 1.012);
+    cabDoorGroup.add(doorPanel);
+
+    // Subtle minimalist recessed shaker framing accent on front face (same warm oak family)
+    const insetFace = new THREE.Mesh(
+      createBeveledBox(doorW - 0.068, doorH - 0.068, 0.005, 0.0025, 2),
+      turntableWalnutMat
+    );
+    insetFace.position.z = 0.0095;
+    insetFace.receiveShadow = true;
+    cabDoorGroup.add(insetFace);
+
+    // Sleek vertical brushed-brass cylinder pull handle & twin standoffs on the left (opening) edge
+    const pullX = -doorW * 0.5 + 0.036;
+    const pullY = 0.045;
+    const pullBar = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.0052, 0.0052, 0.135, 12),
+      handleBrassMat
+    );
+    pullBar.position.set(pullX, pullY, 0.024);
+    pullBar.castShadow = true;
+    cabDoorGroup.add(pullBar);
+
+    for (const pyOff of [-0.046, 0.046]) {
+      const standoff = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.0038, 0.0038, 0.016, 10),
+        handleBrassMat
+      );
+      standoff.rotation.x = Math.PI / 2;
+      standoff.position.set(pullX, pullY + pyOff, 0.016);
+      cabDoorGroup.add(standoff);
+    }
+
+    vinylCabinet.add(cabDoorGroup);
+  }
+
+  // PACK THE TWO TALL VINYL CUBBIES WITH COLORFUL, AIRILY SPACED 12-INCH VINYL LP RECORDS
   const innerSleevePaperMat = mat({ color: 0xf7f2e8, roughness: 0.88, celStrength: 0.38 });
   const vinylBayRanges: [number, number, number][] = [
     [-0.640, -0.456, 11], // Far-left sub-bay
@@ -4849,9 +4910,11 @@ export function buildLivingRoom(
   const vinylFloorY = 0.476;
   for (let b = 0; b < vinylBayRanges.length; b++) {
     const [bx0, bx1, bSeed] = vinylBayRanges[b];
+    // Leave tasteful ~35% airy breathing room in each vinyl cubby so records look curated rather than stuffed
+    const fillEnd = bx0 + (bx1 - bx0) * (b % 2 === 0 ? 0.68 : 0.56);
     let vx = bx0 + 0.010;
     let rIdx = 0;
-    while (vx < bx1 - 0.018) {
+    while (vx < fillEnd - 0.014) {
       const hVal = ((bSeed * 31 + rIdx * 17) * 2654435761) >>> 0;
       const rf1 = (hVal & 0xff) / 255;
       const rf2 = ((hVal >> 8) & 0xff) / 255;
@@ -4861,12 +4924,12 @@ export function buildLivingRoom(
       const sleeveSize = 0.312 + (rf2 - 0.5) * 0.006;
       const variantIdx = (b * 3 + rIdx + Math.floor(rf3 * 3)) % 8;
 
-      const isEndLean = vx + sleeveThick + 0.032 >= bx1 && rIdx >= 3;
-      const leanAngle = isEndLean ? -(0.11 + rf1 * 0.06) : (rf2 - 0.5) * 0.035;
+      const isEndLean = vx + sleeveThick + 0.026 >= fillEnd && rIdx >= 2;
+      const leanAngle = isEndLean ? -(0.12 + rf1 * 0.06) : (rf2 - 0.5) * 0.032;
       const extraSpan = isEndLean ? Math.abs(Math.sin(leanAngle)) * sleeveSize * 0.45 : 0;
-      if (vx + sleeveThick + extraSpan > bx1 - 0.004) break;
+      if (vx + sleeveThick + extraSpan > bx1 - 0.008) break;
 
-      const pullOutZ = 0.018 + rf3 * 0.034; // Varied staggered sleeve edges!
+      const pullOutZ = 0.018 + rf3 * 0.032; // Varied staggered sleeve edges!
       const lpMesh = new THREE.Mesh(
         createVinylSleeveGeometry(sleeveThick, sleeveSize, variantIdx),
         vinylSleeveMat
@@ -4895,14 +4958,13 @@ export function buildLivingRoom(
         vinylCabinet.add(innerPeek);
       }
 
-      vx += sleeveThick + 0.0032 + rf2 * 0.0035 + extraSpan;
+      vx += sleeveThick + 0.0034 + rf2 * 0.0036 + extraSpan;
       rIdx++;
       if (isEndLean) break;
     }
   }
 
-  // POPULATE THE 3 BOOKSHELF CUBBIES OF THE VINYL CABINET WITH SCULPTED LIGHT-TONED BOOKS & RETRO GAMES
-  // 1) Lower-Left Wide Bay (Y = 0.188 .. 0.452): Manga set + Literature + Philosophy + Horizontal stack + Retro cartridge
+  // POPULATE THE OPEN LOWER-LEFT BOOK BAY OF THE VINYL CABINET (~50% AIRY FILL, EN/JP BOOKS & RETRO GAMES)
   populateRealisticBookTier({
     parent: vinylCabinet,
     axis: 'x',
@@ -4916,38 +4978,6 @@ export function buildLivingRoom(
     seed: 401,
     includeMangaSet: true,
     includeHorizontalStack: true,
-    includeRetroGames: true,
-  });
-  // 2) Upper-Right Book Cubby (Y = 0.512 .. 0.808): Tall design manuals, philosophy & leaning books
-  populateRealisticBookTier({
-    parent: vinylCabinet,
-    axis: 'x',
-    spineSign: 1,
-    start: 0.204,
-    end: 0.638,
-    surfaceY: 0.512,
-    depthCenter: 0.055,
-    maxDepth: 0.24,
-    maxHeight: 0.294,
-    seed: 509,
-    includeMangaSet: false,
-    includeHorizontalStack: true,
-    includeRetroGames: true,
-  });
-  // 3) Lower-Right Book Cubby (Y = 0.188 .. 0.488): Matched manga volumes + retro game cases + literature
-  populateRealisticBookTier({
-    parent: vinylCabinet,
-    axis: 'x',
-    spineSign: 1,
-    start: 0.204,
-    end: 0.638,
-    surfaceY: legH + 0.028,
-    depthCenter: 0.055,
-    maxDepth: 0.24,
-    maxHeight: 0.296,
-    seed: 613,
-    includeMangaSet: true,
-    includeHorizontalStack: false,
     includeRetroGames: true,
   });
 
@@ -5696,65 +5726,302 @@ export function buildLivingRoom(
     celStrength: 0.45,
   });
 
-  // 1) Central Flush-Mount Flat White Plastic-Shell Ceiling Lamp at Living Room tray center (3.12, 3.28, -5.08)
-  //    Mounted on ceilingGroup so Overview Mode hides it cleanly with the ceiling!
+  // 1) Central Vintage Wooden 5-Blade Ceiling Fan-Light Combo (复古木质吊扇一体灯，短吊杆)
+  //    Mounted on ceilingGroup at Living Room tray center (3.12, 3.28, -5.08) so Overview Mode hides it cleanly!
   {
-    const ceilingPanel = new THREE.Group();
-    ceilingPanel.name = 'LivingFlatCeilingLamp';
-    ceilingPanel.position.set(3.12, 3.28, -5.08);
-    ceilingPanel.userData.dynamic = true;
+    const antiqueBrassMat = mat({
+      color: 0xc9a05c,
+      roughness: 0.28,
+      metalness: 0.84,
+      celStrength: 0.42,
+    });
+    const vintageBronzeMat = mat({
+      color: 0x4f3b2c,
+      roughness: 0.42,
+      metalness: 0.62,
+      celStrength: 0.48,
+    });
+    const fanWoodBladeMat = mat({
+      map: textures.furnitureOak,
+      bumpMap: textures.furnitureWoodBump,
+      bumpScale: 0.005,
+      color: 0xa97244,
+      roughness: 0.46,
+      metalness: 0.0,
+      woodLacquer: 0.62,
+    });
+    const fanCaneInlayMat = mat({
+      map: textures.furnitureOak,
+      color: 0xd2a874,
+      roughness: 0.56,
+      metalness: 0.0,
+      woodLacquer: 0.42,
+    });
 
-    // Upper ceiling mounting collar slightly recessed against the tray ceiling
-    const mountPlate = new THREE.Mesh(
-      createBeveledSlab(0.84, 0.016, 0.84, 0.055, 0.005),
-      plasticTrimMat
+    const fanRoot = new THREE.Group();
+    fanRoot.name = 'LivingVintageCeilingFanLamp';
+    fanRoot.position.set(3.12, 3.28, -5.08);
+    fanRoot.userData.dynamic = true;
+
+    // 1A. Static Vintage Mount, Short Downrod Shaft, Motor Housing & Milk-Glass Light Kit
+    const fanStaticGroup = new THREE.Group();
+    fanStaticGroup.userData.dynamic = true;
+
+    // Stepped vintage antique-brass ceiling canopy (covers tray center flush at Y=0)
+    const canopyPts = [
+      new THREE.Vector2(0.016, -0.044),
+      new THREE.Vector2(0.042, -0.042),
+      new THREE.Vector2(0.078, -0.026),
+      new THREE.Vector2(0.114, -0.014),
+      new THREE.Vector2(0.126, -0.004),
+      new THREE.Vector2(0.126, 0.0),
+    ];
+    const canopyMesh = new THREE.Mesh(
+      new THREE.LatheGeometry(canopyPts, 28),
+      antiqueBrassMat
     );
-    mountPlate.position.y = -0.008;
-    ceilingPanel.add(mountPlate);
+    outlines.addOutline(canopyMesh, 1.018);
+    fanStaticGroup.add(canopyMesh);
 
-    // Main low-profile beveled white ABS plastic outer shell housing (0.88m x 0.048m x 0.88m)
-    const outerShell = new THREE.Mesh(
-      createBeveledSlab(0.88, 0.046, 0.88, 0.068, 0.012),
-      plasticShellMat
+    // Short vintage brushed-brass downrod shaft (短轴设计: ~7.8cm visible drop)
+    const shortShaft = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.0155, 0.0155, 0.088, 16),
+      antiqueBrassMat
     );
-    outerShell.position.y = -0.036;
-    outlines.addOutline(outerShell, 1.016);
-    ceilingPanel.add(outerShell);
+    shortShaft.position.y = -0.082;
+    fanStaticGroup.add(shortShaft);
 
-    // Fine molded perimeter seam ring separating the plastic bezel from the flat acrylic diffuser
-    const innerRimFrame = new THREE.Mesh(
-      createBeveledSlab(0.80, 0.010, 0.80, 0.052, 0.003),
-      plasticGrooveMat
+    // Turned brass coupling collar at top of motor housing
+    const collarMesh = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.028, 0.046, 0.026, 20),
+      antiqueBrassMat
     );
-    innerRimFrame.position.y = -0.056;
-    ceilingPanel.add(innerRimFrame);
+    collarMesh.position.y = -0.118;
+    fanStaticGroup.add(collarMesh);
 
-    // Flush milky-white flat acrylic light-diffuser panel face
-    const diffuserPanel = new THREE.Mesh(
-      createBeveledSlab(0.77, 0.014, 0.77, 0.046, 0.004),
-      chandelierGlowMat
+    // Classic curved vintage oil-rubbed bronze motor housing drum (bottom-to-top Y for outward normals)
+    const motorPts = [
+      new THREE.Vector2(0.098, -0.216),
+      new THREE.Vector2(0.132, -0.212),
+      new THREE.Vector2(0.162, -0.194),
+      new THREE.Vector2(0.168, -0.168),
+      new THREE.Vector2(0.156, -0.144),
+      new THREE.Vector2(0.112, -0.126),
+      new THREE.Vector2(0.044, -0.120),
+    ];
+    const motorHousing = new THREE.Mesh(
+      new THREE.LatheGeometry(motorPts, 32),
+      vintageBronzeMat
     );
-    diffuserPanel.position.y = -0.060;
-    ceilingPanel.add(diffuserPanel);
+    motorHousing.castShadow = true;
+    outlines.addOutline(motorHousing, 1.018);
+    fanStaticGroup.add(motorHousing);
 
-    // Subtle molded corner plastic retainer clips on the outer housing lip
-    for (const cx of [-0.39, 0.39]) {
-      for (const cz of [-0.39, 0.39]) {
-        const clip = new THREE.Mesh(
-          createBeveledBox(0.032, 0.010, 0.032, 0.003, 1),
-          plasticTrimMat
-        );
-        clip.position.set(cx, -0.057, cz);
-        ceilingPanel.add(clip);
-      }
+    // Upper & lower spun antique-brass accent trim rings around motor housing
+    for (const [ry, rad] of [
+      [-0.145, 0.157],
+      [-0.194, 0.161],
+    ] as const) {
+      const trimRing = new THREE.Mesh(
+        new THREE.TorusGeometry(rad, 0.0055, 8, 32),
+        antiqueBrassMat
+      );
+      trimRing.rotation.x = Math.PI / 2;
+      trimRing.position.y = ry;
+      fanStaticGroup.add(trimRing);
     }
 
-    mergeDynamicSubtreeMeshes(ceilingPanel, outlines, 'LivingFlatCeilingLampMerged');
-    ceilingGroup.add(ceilingPanel);
+    // Vintage stepped antique-brass light-kit fitter cup beneath the motor (bottom-to-top Y)
+    const fitterPts = [
+      new THREE.Vector2(0.096, -0.248),
+      new THREE.Vector2(0.108, -0.246),
+      new THREE.Vector2(0.114, -0.228),
+      new THREE.Vector2(0.104, -0.214),
+    ];
+    const lightFitter = new THREE.Mesh(
+      new THREE.LatheGeometry(fitterPts, 28),
+      antiqueBrassMat
+    );
+    fanStaticGroup.add(lightFitter);
 
-    // Primary Flat Ceiling Panel Wide-Radius Warm-White PointLight (starts at 0 = OFF)
-    const mainChandelierLight = new THREE.PointLight(0xfff1da, 0.0, 21.0, 0.66);
-    mainChandelierLight.position.set(3.12, 3.02, -5.08);
+    // Sculpted vintage frosted milk-glass schoolhouse dome globe (bottom-to-top Y for outward normals)
+    const globePts = [
+      new THREE.Vector2(0.0, -0.369),
+      new THREE.Vector2(0.056, -0.366),
+      new THREE.Vector2(0.122, -0.354),
+      new THREE.Vector2(0.164, -0.328),
+      new THREE.Vector2(0.168, -0.298),
+      new THREE.Vector2(0.138, -0.264),
+      new THREE.Vector2(0.098, -0.242),
+    ];
+    const milkGlassGlobe = new THREE.Mesh(
+      new THREE.LatheGeometry(globePts, 32),
+      chandelierGlowMat
+    );
+    outlines.addOutline(milkGlassGlobe, 1.016);
+    fanStaticGroup.add(milkGlassGlobe);
+
+    // Delicate antique-brass finial button capping the bottom tip of the milk-glass dome
+    const finialBase = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.022, 0.014, 0.012, 16),
+      antiqueBrassMat
+    );
+    finialBase.position.y = -0.371;
+    fanStaticGroup.add(finialBase);
+    const finialKnob = new THREE.Mesh(
+      new THREE.SphereGeometry(0.012, 12, 10),
+      antiqueBrassMat
+    );
+    finialKnob.position.y = -0.382;
+    fanStaticGroup.add(finialKnob);
+
+    // Twin delicate vintage brass pull chains with turned walnut teardrop fobs
+    for (const [ang, len] of [
+      [0.45, 0.115],
+      [1.05, 0.088],
+    ] as const) {
+      const px = Math.cos(ang) * 0.102;
+      const pz = Math.sin(ang) * 0.102;
+      const chain = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.0022, 0.0022, len, 6),
+        antiqueBrassMat
+      );
+      chain.position.set(px, -0.240 - len * 0.5, pz);
+      fanStaticGroup.add(chain);
+
+      const fob = new THREE.Mesh(
+        new THREE.SphereGeometry(0.0085, 10, 8),
+        fanWoodBladeMat
+      );
+      fob.scale.set(0.85, 1.45, 0.85);
+      fob.position.set(px, -0.240 - len - 0.008, pz);
+      fanStaticGroup.add(fob);
+    }
+
+    mergeDynamicSubtreeMeshes(fanStaticGroup, outlines, 'LivingVintageFanStaticMerged');
+    fanRoot.add(fanStaticGroup);
+
+    // 1B. Dynamic Rotating 5-Blade Vintage Walnut Wood Rotor Hub (spins smoothly in render loop!)
+    const fanRotor = new THREE.Group();
+    fanRotor.name = 'LivingVintageFanRotor';
+    fanRotor.position.set(0, -0.170, 0);
+    fanRotor.userData.dynamic = true;
+
+    // Build graceful vintage beveled teardrop wooden paddle blade geometry
+    const bladeShape = new THREE.Shape();
+    bladeShape.moveTo(0.195, -0.048);
+    bladeShape.quadraticCurveTo(0.36, -0.064, 0.56, -0.072);
+    bladeShape.quadraticCurveTo(0.655, -0.072, 0.672, -0.022);
+    bladeShape.quadraticCurveTo(0.676, 0.0, 0.672, 0.022);
+    bladeShape.quadraticCurveTo(0.655, 0.072, 0.56, 0.072);
+    bladeShape.quadraticCurveTo(0.36, 0.064, 0.195, 0.048);
+    bladeShape.closePath();
+
+    const bladeGeo = new THREE.ExtrudeGeometry(bladeShape, {
+      depth: 0.007,
+      bevelEnabled: true,
+      bevelThickness: 0.0028,
+      bevelSize: 0.0036,
+      bevelSegments: 2,
+    });
+    // Lay blade flat in XZ plane (center Y=0) and normalize planar UVs along wood grain
+    bladeGeo.rotateX(Math.PI / 2);
+    bladeGeo.translate(0, 0.0035, 0);
+    {
+      const bPos = bladeGeo.attributes.position as THREE.BufferAttribute;
+      const bUv = bladeGeo.attributes.uv as THREE.BufferAttribute;
+      for (let vi = 0; vi < bPos.count; vi++) {
+        bUv.setXY(
+          vi,
+          THREE.MathUtils.clamp((bPos.getX(vi) - 0.18) / 0.52, 0.02, 0.98),
+          THREE.MathUtils.clamp((bPos.getZ(vi) + 0.08) / 0.16, 0.02, 0.98)
+        );
+      }
+      bUv.needsUpdate = true;
+    }
+
+    // Subtle decorative lighter wood/cane inlay panel set on the underside & top of each blade
+    const inlayShape = new THREE.Shape();
+    inlayShape.moveTo(0.285, -0.030);
+    inlayShape.quadraticCurveTo(0.44, -0.040, 0.565, -0.044);
+    inlayShape.quadraticCurveTo(0.618, -0.042, 0.625, 0.0);
+    inlayShape.quadraticCurveTo(0.618, 0.042, 0.565, 0.044);
+    inlayShape.quadraticCurveTo(0.44, 0.040, 0.285, 0.030);
+    inlayShape.closePath();
+    const inlayGeo = new THREE.ExtrudeGeometry(inlayShape, {
+      depth: 0.0138,
+      bevelEnabled: false,
+    });
+    inlayGeo.rotateX(Math.PI / 2);
+    inlayGeo.translate(0, 0.0069, 0);
+
+    // Ornate antique-brass blade-iron mounting bracket (叶叉)
+    const bracketShape = new THREE.Shape();
+    bracketShape.moveTo(0.135, -0.024);
+    bracketShape.lineTo(0.215, -0.028);
+    bracketShape.lineTo(0.268, -0.046);
+    bracketShape.lineTo(0.284, -0.038);
+    bracketShape.lineTo(0.284, 0.038);
+    bracketShape.lineTo(0.268, 0.046);
+    bracketShape.lineTo(0.215, 0.028);
+    bracketShape.lineTo(0.135, 0.024);
+    bracketShape.closePath();
+    const bracketGeo = new THREE.ExtrudeGeometry(bracketShape, {
+      depth: 0.0055,
+      bevelEnabled: true,
+      bevelThickness: 0.0016,
+      bevelSize: 0.0018,
+      bevelSegments: 2,
+    });
+    bracketGeo.rotateX(Math.PI / 2);
+    bracketGeo.translate(0, -0.0065, 0);
+
+    const rivetGeo = new THREE.CylinderGeometry(0.0045, 0.0045, 0.004, 8);
+    const bladeCount = 5;
+    for (let bi = 0; bi < bladeCount; bi++) {
+      const armHolder = new THREE.Group();
+      armHolder.rotation.y = (bi / bladeCount) * Math.PI * 2;
+
+      // Aerodynamic 11-degree blade pitch
+      const pitchedBlade = new THREE.Group();
+      pitchedBlade.rotation.x = 0.19;
+
+      const woodBlade = new THREE.Mesh(bladeGeo, fanWoodBladeMat);
+      woodBlade.castShadow = true;
+      woodBlade.receiveShadow = true;
+      outlines.addOutline(woodBlade, 1.016);
+      pitchedBlade.add(woodBlade);
+
+      const caneInlay = new THREE.Mesh(inlayGeo, fanCaneInlayMat);
+      pitchedBlade.add(caneInlay);
+
+      const ironBracket = new THREE.Mesh(bracketGeo, antiqueBrassMat);
+      pitchedBlade.add(ironBracket);
+
+      // Three raised vintage brass mounting rivets on the underside of each blade iron
+      for (const [rx, rz] of [
+        [0.245, 0.0],
+        [0.266, -0.026],
+        [0.266, 0.026],
+      ] as const) {
+        const rivet = new THREE.Mesh(rivetGeo, antiqueBrassMat);
+        rivet.position.set(rx, -0.0138, rz);
+        pitchedBlade.add(rivet);
+      }
+
+      armHolder.add(pitchedBlade);
+      fanRotor.add(armHolder);
+    }
+
+    mergeDynamicSubtreeMeshes(fanRotor, outlines, 'LivingVintageFanRotorMerged');
+    fanRoot.add(fanRotor);
+    brightRig.fanRotor = fanRotor;
+
+    ceilingGroup.add(fanRoot);
+
+    // Primary Ceiling Fan-Light Wide-Radius Warm-White PointLight (starts at 0 = OFF)
+    const mainChandelierLight = new THREE.PointLight(0xfff0d6, 0.0, 21.0, 0.66);
+    mainChandelierLight.position.set(3.12, 2.84, -5.08);
     mainChandelierLight.castShadow = false;
     scene.add(mainChandelierLight);
     brightRig.lights.push(mainChandelierLight);
@@ -5819,10 +6086,10 @@ export function buildLivingRoom(
     }
     brightRig.onToggleNotify?.(nextOn);
     return {
-      title: nextOn ? '客厅平面顶灯已开启' : '客厅平面顶灯已关闭',
+      title: nextOn ? '客厅复古吊扇灯已开启' : '客厅复古吊扇灯已关闭',
       message: nextOn
-        ? '白色塑料壳平面顶灯与两侧嵌入式吸顶灯同时点亮，柔和均匀的暖白色光线瞬间照亮整个客厅。'
-        : '客厅平面顶灯已关闭，室内恢复为当前氛围的自然光影层次。',
+        ? '复古木质吊扇一体灯的乳白玻璃灯罩与两侧筒灯同时点亮，木扇叶轻快旋转带来温暖柔和的光影。'
+        : '客厅吊扇灯已关闭，扇叶转为轻缓微风转动，室内恢复当前氛围的自然光影层次。',
     };
   };
 

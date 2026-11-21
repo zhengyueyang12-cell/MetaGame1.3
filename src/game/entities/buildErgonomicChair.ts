@@ -182,38 +182,59 @@ function createErgonomicSeatCushionGeometry(
 }
 
 /**
- * Generates an S-curved taut breathable mesh backrest sheet following natural lumbar & thoracic curve.
+ * Shared ergonomic backrest S-curve surface equation (in seatGroup coordinates):
+ * guarantees zero clipping between the breathable mesh sheet, outer polymer frame,
+ * adjustable rear lumbar support, and sculpted rear Y-spine bracket.
+ */
+const BACK_CENTER_Y = 0.805;
+const BACK_HALF_H = 0.228;
+const BACK_HALF_W = 0.214;
+
+function evalBackrestWidthFactor(ny: number): number {
+  return 0.90 + 0.10 * Math.sin((ny + 0.35) * 1.4) - 0.05 * Math.pow(Math.max(0, ny - 0.55), 2);
+}
+
+function evalBackrestZ(x: number, y: number): number {
+  const ny = THREE.MathUtils.clamp((y - BACK_CENTER_Y) / BACK_HALF_H, -1.05, 1.05);
+  const wScale = evalBackrestWidthFactor(ny);
+  const nx = THREE.MathUtils.clamp(x / (BACK_HALF_W * wScale), -1.05, 1.05);
+  const lumbarForward = -Math.exp(-Math.pow((ny + 0.34) / 0.48, 2)) * 0.032;
+  const upperRecline = (ny + 0.45) * 0.036;
+  const sideWrap = -Math.pow(Math.abs(nx), 1.85) * 0.026;
+  return 0.232 + lumbarForward + upperRecline + sideWrap;
+}
+
+/**
+ * Generates an S-curved taut breathable mesh backrest sheet whose vertices lie strictly
+ * on `evalBackrestZ(x, y)` inside the polymer perimeter frame (zero interpenetration!).
  */
 function createCurvedMeshBackrestGeometry(
   width: number,
   height: number,
-  thickness = 0.014
+  thickness = 0.010,
+  centerY = BACK_CENTER_Y,
+  zOffset = 0
 ): THREE.BufferGeometry {
   const geo = new THREE.BoxGeometry(width, height, thickness, 16, 20, 2);
   const pos = geo.attributes.position;
-  const hw = width * 0.5;
   const hh = height * 0.5;
 
   for (let i = 0; i < pos.count; i++) {
     let x = pos.getX(i);
-    const y = pos.getY(i);
-    let z = pos.getZ(i);
+    const localY = pos.getY(i);
+    const localZ = pos.getZ(i);
 
-    const nx = x / hw; // -1..1
-    const ny = y / hh; // -1 (bottom) .. +1 (top)
-
-    // Ergonomic shoulder taper: slightly narrower at waist, gently flared at upper thoracic shoulders
-    const widthProfile = 0.90 + 0.10 * Math.sin((ny + 0.35) * 1.4) - 0.05 * Math.pow(Math.max(0, ny - 0.55), 2);
+    const worldY = centerY + localY;
+    const ny = THREE.MathUtils.clamp((worldY - BACK_CENTER_Y) / BACK_HALF_H, -1, 1);
+    const widthProfile = evalBackrestWidthFactor(ny);
     x *= widthProfile;
 
-    // S-curve lumbar forward bulge near ny = -0.32, gentle backward thoracic cradle near ny = +0.42
-    const lumbarPush = -Math.exp(-Math.pow((ny + 0.34) / 0.45, 2)) * 0.036;
-    const upperLean = Math.max(0, ny + 0.2) * 0.045;
-    // Lateral body-hugging concavity so the backrest cradles the spine
-    const sideWrap = -Math.pow(Math.abs(nx), 1.9) * 0.034;
+    // Slight soft edge taper at very top/bottom corners so mesh seats cleanly inside frame
+    const cornerTaper = Math.max(0, Math.abs(localY / hh) - 0.78) / 0.22;
+    x *= 1 - 0.14 * cornerTaper * cornerTaper;
 
-    z += lumbarPush + upperLean + sideWrap;
-    pos.setXYZ(i, x, y, z);
+    const surfaceZ = evalBackrestZ(x, worldY) + zOffset;
+    pos.setXYZ(i, x, worldY, surfaceZ + localZ);
   }
   geo.computeVertexNormals();
   return geo;
@@ -473,135 +494,142 @@ export function createErgonomicSwivelChair(
 
   // =========================================================================
   // 3. SCULPTED ERGONOMIC POLYMER Y-SPINE, PERIMETER BACK FRAME & BREATHABLE MESH
+  //    (Strictly layered in Z relative to evalBackrestZ so ZERO clipping occurs!)
   // =========================================================================
-  // Main curved structural polymer lumbar spine curving up from the under-seat box
-  const mainSpineCurve = new THREE.CatmullRomCurve3([
-    new THREE.Vector3(0, 0.425, 0.08),
-    new THREE.Vector3(0, 0.432, 0.245),
-    new THREE.Vector3(0, 0.525, 0.292),
-    new THREE.Vector3(0, 0.655, 0.278),
-    new THREE.Vector3(0, 0.785, 0.296),
-  ]);
-  const mainSpine = new THREE.Mesh(
-    new THREE.TubeGeometry(mainSpineCurve, 18, 0.024, 10, false),
+  // 3A. Contoured Outer Molded Polymer Backrest Perimeter Frame hugging the mesh edges
+  const frameProfile: [number, number][] = [
+    [0.0, 0.576],
+    [0.148, 0.584],
+    [0.206, 0.655],
+    [0.220, 0.805],
+    [0.206, 0.965],
+    [0.138, 1.028],
+    [0.0, 1.036],
+    [-0.138, 1.028],
+    [-0.206, 0.965],
+    [-0.220, 0.805],
+    [-0.206, 0.655],
+    [-0.148, 0.584],
+  ];
+  const backFramePts = frameProfile.map(
+    ([fx, fy]) => new THREE.Vector3(fx, fy, evalBackrestZ(fx, fy) + 0.002)
+  );
+  const backFrameCurve = new THREE.CatmullRomCurve3(backFramePts, true);
+  const backFrameMesh = new THREE.Mesh(
+    new THREE.TubeGeometry(backFrameCurve, 44, 0.017, 10, true),
     plasticFrameMat
   );
-  mainSpine.scale.set(1.38, 1.0, 0.72);
+  backFrameMesh.castShadow = true;
+  backFrameMesh.receiveShadow = true;
+  outlines.addOutline(backFrameMesh, 1.016);
+  seatGroup.add(backFrameMesh);
+
+  // 3B. Stretched Breathable Micro-Perforated Mesh Backrest Sheet seated cleanly inside frame
+  const meshBackGeo = createCurvedMeshBackrestGeometry(0.414, 0.448, 0.009, BACK_CENTER_Y, 0.0);
+  const meshBack = new THREE.Mesh(meshBackGeo, meshBackMat);
+  meshBack.castShadow = true;
+  meshBack.receiveShadow = true;
+  seatGroup.add(meshBack);
+
+  // 3C. Adjustable Contoured Lumbar Support Pad mounted strictly BEHIND lower breathable mesh
+  //     (+0.016m behind mesh centerline, matching exact S-curve -> ZERO front poke-through!)
+  const lumbarPadGeo = createCurvedMeshBackrestGeometry(0.32, 0.092, 0.014, 0.695, 0.016);
+  const lumbarPad = new THREE.Mesh(lumbarPadGeo, plasticAccentMat);
+  lumbarPad.castShadow = true;
+  seatGroup.add(lumbarPad);
+
+  // 3D. Main Structural Polymer Spine & Y-Frame Support Arms staying strictly BEHIND backrest (+0.042..+0.056m)
+  //     Note: NO Z-scaling applied to offset TubeGeometry curves so Z positions remain exact!
+  const spineLumbarZ = evalBackrestZ(0, 0.70) + 0.048;
+  const spineMidZ = evalBackrestZ(0, 0.80) + 0.052;
+  const mainSpineCurve = new THREE.CatmullRomCurve3([
+    new THREE.Vector3(0, 0.422, 0.085),
+    new THREE.Vector3(0, 0.432, 0.255),
+    new THREE.Vector3(0, 0.518, 0.302),
+    new THREE.Vector3(0, 0.615, evalBackrestZ(0, 0.615) + 0.050),
+    new THREE.Vector3(0, 0.700, spineLumbarZ),
+    new THREE.Vector3(0, 0.800, spineMidZ),
+  ]);
+  const mainSpine = new THREE.Mesh(
+    new THREE.TubeGeometry(mainSpineCurve, 20, 0.020, 10, false),
+    plasticFrameMat
+  );
   mainSpine.castShadow = true;
-  outlines.addOutline(mainSpine, 1.018);
+  outlines.addOutline(mainSpine, 1.016);
   seatGroup.add(mainSpine);
 
-  // Signature Ergonomic Y-Frame Upper Shoulder Arms branching from spine to upper backrest frame
-  for (const side of [-1, 1]) {
+  // Lumbar clamping bridge linking spine cleanly to the back of the lumbar pad
+  const lumbarBridge = new THREE.Mesh(
+    createBeveledBox(0.068, 0.052, 0.026, 0.005, 2),
+    plasticAccentMat
+  );
+  lumbarBridge.position.set(0, 0.695, evalBackrestZ(0, 0.695) + 0.032);
+  seatGroup.add(lumbarBridge);
+
+  // Signature Ergonomic Y-Frame Upper Shoulder Arms & Lower Frame Struts (strictly behind mesh!)
+  for (const side of [-1, 1] as const) {
     const yBranchCurve = new THREE.CatmullRomCurve3([
-      new THREE.Vector3(0, 0.725, 0.288),
-      new THREE.Vector3(side * 0.095, 0.815, 0.296),
-      new THREE.Vector3(side * 0.185, 0.920, 0.282),
-      new THREE.Vector3(side * 0.205, 0.995, 0.268),
+      new THREE.Vector3(0, 0.785, spineMidZ),
+      new THREE.Vector3(side * 0.088, 0.855, evalBackrestZ(side * 0.088, 0.855) + 0.044),
+      new THREE.Vector3(side * 0.168, 0.925, evalBackrestZ(side * 0.168, 0.925) + 0.030),
+      new THREE.Vector3(side * 0.206, 0.962, evalBackrestZ(side * 0.206, 0.962) + 0.008),
     ]);
     const yBranch = new THREE.Mesh(
-      new THREE.TubeGeometry(yBranchCurve, 14, 0.0155, 8, false),
+      new THREE.TubeGeometry(yBranchCurve, 14, 0.0135, 8, false),
       plasticFrameMat
     );
-    yBranch.scale.set(1.0, 1.0, 0.75);
     yBranch.castShadow = true;
     seatGroup.add(yBranch);
 
-    // Lower lateral stabilizing ribs branching into the lumbar frame
+    // Lower lateral stabilizing struts connecting spine cleanly to lower-outer frame
     const lowerBranchCurve = new THREE.CatmullRomCurve3([
-      new THREE.Vector3(0, 0.605, 0.285),
-      new THREE.Vector3(side * 0.115, 0.625, 0.272),
-      new THREE.Vector3(side * 0.202, 0.652, 0.244),
+      new THREE.Vector3(0, 0.615, evalBackrestZ(0, 0.615) + 0.048),
+      new THREE.Vector3(side * 0.115, 0.630, evalBackrestZ(side * 0.115, 0.630) + 0.036),
+      new THREE.Vector3(side * 0.204, 0.654, evalBackrestZ(side * 0.204, 0.654) + 0.008),
     ]);
     const lowerBranch = new THREE.Mesh(
-      new THREE.TubeGeometry(lowerBranchCurve, 10, 0.012, 8, false),
+      new THREE.TubeGeometry(lowerBranchCurve, 10, 0.0115, 8, false),
       plasticFrameMat
     );
     seatGroup.add(lowerBranch);
   }
 
-  // Contoured Outer Molded Polymer Backrest Perimeter Frame (open ergonomic frame holding the mesh!)
-  const backFramePts = [
-    new THREE.Vector3(0.0, 0.562, 0.258),
-    new THREE.Vector3(0.155, 0.576, 0.240),
-    new THREE.Vector3(0.214, 0.665, 0.212),
-    new THREE.Vector3(0.228, 0.815, 0.232),
-    new THREE.Vector3(0.212, 0.975, 0.258),
-    new THREE.Vector3(0.135, 1.036, 0.276),
-    new THREE.Vector3(0.0, 1.046, 0.282),
-    new THREE.Vector3(-0.135, 1.036, 0.276),
-    new THREE.Vector3(-0.212, 0.975, 0.258),
-    new THREE.Vector3(-0.228, 0.815, 0.232),
-    new THREE.Vector3(-0.214, 0.665, 0.212),
-    new THREE.Vector3(-0.155, 0.576, 0.240),
-  ];
-  const backFrameCurve = new THREE.CatmullRomCurve3(backFramePts, true);
-  const backFrameMesh = new THREE.Mesh(
-    new THREE.TubeGeometry(backFrameCurve, 44, 0.0185, 10, true),
-    plasticFrameMat
-  );
-  backFrameMesh.castShadow = true;
-  backFrameMesh.receiveShadow = true;
-  outlines.addOutline(backFrameMesh, 1.018);
-  seatGroup.add(backFrameMesh);
-
-  // Stretched Breathable Micro-Perforated Mesh Backrest Sheet (透气网布靠背) inside the polymer frame
-  const meshBackGeo = createCurvedMeshBackrestGeometry(0.425, 0.458, 0.014);
-  const meshBack = new THREE.Mesh(meshBackGeo, meshBackMat);
-  meshBack.position.set(0, 0.806, 0.248);
-  meshBack.castShadow = true;
-  meshBack.receiveShadow = true;
-  seatGroup.add(meshBack);
-
-  // Adjustable Contoured Lumbar Support Pad (独立可调人体工学腰托) mounted behind the lower mesh
-  const lumbarPadGeo = createCurvedMeshBackrestGeometry(0.32, 0.115, 0.022);
-  const lumbarPad = new THREE.Mesh(lumbarPadGeo, plasticAccentMat);
-  lumbarPad.position.set(0, 0.668, 0.254);
-  lumbarPad.castShadow = true;
-  seatGroup.add(lumbarPad);
-
-  const lumbarBreathPad = new THREE.Mesh(
-    createBeveledSlab(0.28, 0.088, 0.016, 0.028, 0.005),
-    breathableSeatMat
-  );
-  lumbarBreathPad.position.set(0, 0.668, 0.238);
-  seatGroup.add(lumbarBreathPad);
-
   // =========================================================================
   // 4. SCULPTED ERGONOMIC HEADREST (头枕) & ADJUSTABLE T-ARMRESTS (塑料扶手)
   // =========================================================================
-  // Curved polymer headrest stalk rising from top of backrest frame
+  // Curved polymer headrest stalks mounting cleanly to the rear of the top frame
+  const topFrameZ = evalBackrestZ(0.048, 1.030);
   for (const hx of [-0.048, 0.048]) {
     const neckCurve = new THREE.CatmullRomCurve3([
-      new THREE.Vector3(hx, 1.032, 0.278),
-      new THREE.Vector3(hx * 0.9, 1.095, 0.284),
-      new THREE.Vector3(hx * 0.85, 1.155, 0.262),
+      new THREE.Vector3(hx, 1.032, topFrameZ + 0.008),
+      new THREE.Vector3(hx * 0.92, 1.098, topFrameZ + 0.022),
+      new THREE.Vector3(hx * 0.86, 1.158, topFrameZ + 0.006),
     ]);
     const stalk = new THREE.Mesh(
-      new THREE.TubeGeometry(neckCurve, 10, 0.0095, 8, false),
+      new THREE.TubeGeometry(neckCurve, 10, 0.009, 8, false),
       plasticFrameMat
     );
     stalk.castShadow = true;
     seatGroup.add(stalk);
   }
 
-  // Headrest molded plastic rear shell + breathable contoured cushion front
+  // Headrest molded plastic rear shell + breathable contoured cushion cleanly separated in front
   const headShell = new THREE.Mesh(
-    createBeveledSlab(0.265, 0.115, 0.026, 0.038, 0.008),
+    createBeveledSlab(0.265, 0.112, 0.022, 0.036, 0.007),
     plasticFrameMat
   );
-  headShell.position.set(0, 1.168, 0.258);
-  headShell.rotation.x = 0.24;
+  headShell.position.set(0, 1.168, topFrameZ - 0.002);
+  headShell.rotation.x = 0.22;
   headShell.castShadow = true;
-  outlines.addOutline(headShell, 1.02);
+  outlines.addOutline(headShell, 1.018);
   seatGroup.add(headShell);
 
   const headCushion = new THREE.Mesh(
-    createBeveledSlab(0.244, 0.098, 0.028, 0.032, 0.009),
+    createBeveledSlab(0.246, 0.098, 0.026, 0.032, 0.008),
     breathableSeatMat
   );
-  headCushion.position.set(0, 1.166, 0.242);
-  headCushion.rotation.x = 0.24;
+  headCushion.position.set(0, 1.164, topFrameZ - 0.022);
+  headCushion.rotation.x = 0.22;
   headCushion.castShadow = true;
   seatGroup.add(headCushion);
 

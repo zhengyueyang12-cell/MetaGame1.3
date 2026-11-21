@@ -5209,14 +5209,26 @@ export class ApartmentEngine {
       }
     }
 
-    // 3c. Smoothly damp Living Room modern chandelier shader boost & sync Constant 6-Slot GPU PointLight Pool
-    const targetLivingBoost = this.ctx.metaState.livingBrightLight.isOn ? 1.0 : 0.0;
+    // 3c. Smoothly damp Living Room vintage ceiling fan-light boost, spin fan blades & sync GPU PointLight Pool
+    const livingLampRig = this.ctx.metaState.livingBrightLight;
+    const targetLivingBoost = livingLampRig.isOn ? 1.0 : 0.0;
     this.uniforms.uLivingLightBoost.value = THREE.MathUtils.damp(
       this.uniforms.uLivingLightBoost.value,
       targetLivingBoost,
       11.0,
       dt
     );
+    if (livingLampRig.fanRotor) {
+      const targetFanSpeed = livingLampRig.isOn ? 1.65 : 0.78;
+      livingLampRig.fanSpeed = THREE.MathUtils.damp(
+        livingLampRig.fanSpeed,
+        targetFanSpeed,
+        3.2,
+        dt
+      );
+      livingLampRig.fanRotor.rotation.y =
+        (livingLampRig.fanRotor.rotation.y + livingLampRig.fanSpeed * dt) % (Math.PI * 2);
+    }
     this.syncPointLightPool();
 
     // 4. Render planar mirror reflection pass ONLY when a mirror is actually inside the camera frustum

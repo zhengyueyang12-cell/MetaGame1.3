@@ -305,6 +305,16 @@ export interface TwilightMaterialOptions extends THREE.MeshStandardMaterialParam
    * (0 = disabled, 1.0 = living/dining wood floor, 1.2 = bedroom dusk-optimized wood floor).
    */
   floorFresnel?: number;
+  /**
+   * Enables geometry-based recessed-panel depth shadow & continuous full-height wood grain
+   * on carved wooden doors (eliminates black outlines and upper/lower texture seams).
+   */
+  doorDepthRelief?: {
+    halfThick: number;
+    maxRecessDepth: number;
+    doorHeight: number;
+    doorHalfWidth: number;
+  };
 }
 
 /**
@@ -326,6 +336,7 @@ export function createTwilightMaterial(
     windSway = 0.0,
     fabricCream = 0.0,
     floorFresnel = 0.0,
+    doorDepthRelief,
     ...stdParams
   } = params;
 
@@ -366,9 +377,17 @@ export function createTwilightMaterial(
     mat.userData.baseFloorFresnel = floorFresnel;
   }
 
-  // All six twilight styling knobs are passed as uniforms (not GLSL defines), so sharing
+  // All twilight styling knobs are passed as uniforms (not GLSL defines), so sharing
   // one cache key eliminates dozens of redundant WebGL shader compilations at cold start.
-  mat.customProgramCacheKey = () => 'twilight-miside-v23';
+  mat.customProgramCacheKey = () => 'twilight-miside-v24';
+  const doorReliefVec = doorDepthRelief
+    ? new THREE.Vector4(
+        doorDepthRelief.halfThick,
+        doorDepthRelief.maxRecessDepth,
+        doorDepthRelief.doorHeight,
+        doorDepthRelief.doorHalfWidth
+      )
+    : new THREE.Vector4(0, 0, 0, 0);
   mat.onBeforeCompile = (shader) => {
     shader.uniforms.uCelEnabled = shared.uCelEnabled;
     shader.uniforms.uOutlineEnabled = shared.uOutlineEnabled;
@@ -399,6 +418,7 @@ export function createTwilightMaterial(
     shader.uniforms.uWindSway = { value: windSway };
     shader.uniforms.uFabricCream = { value: fabricCream };
     shader.uniforms.uFloorFresnel = { value: floorFresnel };
+    shader.uniforms.uDoorRelief = { value: doorReliefVec };
 
     shader.vertexShader =
       `
@@ -526,6 +546,7 @@ export function createTwilightMaterial(
       uniform float uWoodLacquer;
       uniform float uFabricCream;
       uniform float uFloorFresnel;
+      uniform vec4 uDoorRelief;
       varying vec3 vTwilightWorldPos;
       varying vec3 vLocalPos;
       varying vec3 vLocalNormal;
@@ -542,7 +563,30 @@ export function createTwilightMaterial(
       '#include <color_fragment>',
       `
       #include <color_fragment>
-      if (uWoodLacquer > 0.01) {
+      if (uDoorRelief.x > 0.001) {
+        // Unified full-height wooden door grain & gentle continuous warmth (zero upper/lower splice!)
+        vec3 dLocN = safeNormalize(vLocalNormal);
+        float doorH = max(uDoorRelief.z, 1.0);
+        float doorHalfW = max(uDoorRelief.w, 0.25);
+        float doorVertT = clamp(vLocalPos.y / doorH, 0.0, 1.0);
+
+        // Smooth continuous honey-oak vertical flow across the entire 0..doorH leaf
+        vec3 doorGradTint = mix(vec3(0.958, 0.922, 0.870), vec3(1.032, 1.020, 0.992), smoothstep(0.0, 1.0, doorVertT));
+        float doorWave = cos(vLocalPos.x * 22.0 + sin(vLocalPos.y * 1.45) * 0.30);
+        float doorFiber = sin(vLocalPos.x * 74.0 + sin(vLocalPos.y * 1.75) * 0.16);
+        float doorGrain = 0.5 + 0.22 * doorWave + 0.13 * doorFiber;
+        vec3 doorGrainShift = mix(vec3(0.980, 0.968, 0.950), vec3(1.020, 1.012, 0.996), clamp(doorGrain, 0.0, 1.0));
+        diffuseColor.rgb *= doorGradTint * doorGrainShift;
+
+        // Warm wood chroma enrichment inside recessed geometric cavities (natural carved-wood depth)
+        float interiorMask =
+          smoothstep(0.032, 0.064, vLocalPos.y) *
+          smoothstep(0.032, 0.064, doorH - vLocalPos.y) *
+          (1.0 - smoothstep(doorHalfW - 0.062, doorHalfW - 0.030, abs(vLocalPos.x)));
+        float recessT = clamp((uDoorRelief.x - abs(vLocalPos.z)) / max(uDoorRelief.y, 0.004), 0.0, 1.0) * interiorMask;
+        float cavityWarmth = smoothstep(0.28, 0.96, recessT);
+        diffuseColor.rgb *= mix(vec3(1.0), vec3(0.955, 0.915, 0.870), cavityWarmth * 0.22);
+      } else if (uWoodLacquer > 0.01) {
         // Clear luminous MiSide honey-gold wood with gentle painterly vertical gradient & silky grain
         vec3 absN = abs(safeNormalize(vLocalNormal));
         float alongCoord = absN.y > 0.5 ? vLocalPos.x : vLocalPos.y;
@@ -808,6 +852,68 @@ export function createTwilightMaterial(
         reflectedLight.indirectSpecular += edgeFresnelGlow;
       }
 
+      // =======================================================================
+      // GEOMETRY-BASED WOODEN DOOR RECESSED PANEL DEPTH SHADOW & BEVEL RELIEF
+      // Replaces harsh outline strokes with true volumetric recess-depth AO,
+      // overhead lip overhang shadows, directional side-bevel shading, and
+      // silky upward-bevel satin catchlights driven purely by 3D geometry.
+      // =======================================================================
+      if (uDoorRelief.x > 0.001) {
+        vec3 dLocN = safeNormalize(vLocalNormal);
+        vec3 dWorldN = safeNormalize((vec4(safeNormalize(normal), 0.0) * viewMatrix).xyz);
+        float doorH = max(uDoorRelief.z, 1.0);
+        float doorHalfW = max(uDoorRelief.w, 0.25);
+
+        // Strictly isolate interior carved panel molding & coffers from outer door perimeter rim
+        float interiorMask =
+          smoothstep(0.032, 0.064, vLocalPos.y) *
+          smoothstep(0.032, 0.064, doorH - vLocalPos.y) *
+          (1.0 - smoothstep(doorHalfW - 0.062, doorHalfW - 0.030, abs(vLocalPos.x)));
+
+        // Physical recess depth from outer door surface (0.0 = outer stiles/rails, 1.0 = deepest groove floor)
+        float recessT = clamp((uDoorRelief.x - abs(vLocalPos.z)) / max(uDoorRelief.y, 0.004), 0.0, 1.0) * interiorMask;
+        float slopeAmt = clamp(1.0 - abs(dLocN.z), 0.0, 1.0) * interiorMask;
+
+        // Directional 3D bevel orientation
+        float downBevel = clamp(-dLocN.y, 0.0, 1.0) * interiorMask;
+        float upBevel = clamp(dLocN.y, 0.0, 1.0) * interiorMask;
+        float sideBevel = abs(dLocN.x) * interiorMask;
+
+        vec3 doorKeyDir = safeNormalize(mix(uWindowLightDir, vec3(0.24, 0.84, 0.36), 0.56));
+        float sideDot = dot(dWorldN, doorKeyDir);
+        float sideShadow = smoothstep(0.26, -0.52, sideDot) * sideBevel;
+        float sideCatch = smoothstep(0.14, 0.78, sideDot) * sideBevel;
+
+        // Deepest recessed moat channel, sloped bevel self-occlusion & inner panel setback
+        float deepGroove = smoothstep(0.56, 0.98, recessT);
+        float bevelRecess = smoothstep(0.05, 0.86, recessT) * slopeAmt;
+        float panelSetback = smoothstep(0.18, 0.50, recessT) * (1.0 - slopeAmt) * (1.0 - deepGroove);
+
+        float doorOcc = clamp(
+          deepGroove * 0.32 +
+          downBevel * (0.26 + 0.16 * recessT) +
+          bevelRecess * 0.15 +
+          sideShadow * 0.22 +
+          panelSetback * 0.055,
+          0.0,
+          0.46
+        );
+
+        // Soft, natural warm honey-caramel depth shadow (distinct 3D relief without heavy dark creases)
+        vec3 warmDepthColor = vec3(0.58, 0.49, 0.41);
+        vec3 depthMul = mix(vec3(1.0), warmDepthColor, doorOcc);
+        reflectedLight.directDiffuse *= depthMul;
+        reflectedLight.indirectDiffuse *= mix(vec3(1.0), warmDepthColor * 1.06, doorOcc);
+        reflectedLight.directSpecular *= (1.0 - doorOcc * 0.55);
+        reflectedLight.indirectSpecular *= (1.0 - doorOcc * 0.48);
+
+        // Gentle satin honey catchlight on upward-facing bevel sills & light-facing vertical bevels
+        float bevelCatch = clamp(upBevel * (0.45 + 0.55 * (1.0 - deepGroove)) + sideCatch * 0.34, 0.0, 1.0);
+        vec3 warmCatchTint = mix(vec3(1.0, 0.955, 0.875), vec3(1.0, 0.972, 0.910), uDaylightFactor * 0.5);
+        reflectedLight.indirectDiffuse += lambertAlb * warmCatchTint * (bevelCatch * 0.16);
+        reflectedLight.directSpecular += warmCatchTint * (bevelCatch * 0.024);
+      }
+
       // Smooth filmic highlight shoulder compression for non-emissive diffuse surfaces
       // (Expands headroom cleanly only when Living Room modern chandelier is switched ON!)
       vec3 totalDiff = reflectedLight.directDiffuse + reflectedLight.indirectDiffuse;
@@ -913,10 +1019,11 @@ export function createArchitecturalGlassMaterial(
     baseOpacity?: number;
     maxFresnelOpacity?: number;
     bevelWidth?: number;
+    bevelStrength?: number;
   }
 ): THREE.ShaderMaterial {
   const tint = new THREE.Color(options?.tintHex ?? 0xebf6f4);
-  const edgeTint = new THREE.Color(options?.edgeTintHex ?? 0x7cb6ad);
+  const edgeTint = new THREE.Color(options?.edgeTintHex ?? 0x626a73);
   return new THREE.ShaderMaterial({
     uniforms: {
       uDaylightFactor: shared.uDaylightFactor,
@@ -927,9 +1034,10 @@ export function createArchitecturalGlassMaterial(
       uRimColor: shared.uRimColor,
       uTint: { value: tint },
       uEdgeTint: { value: edgeTint },
-      uBaseOpacity: { value: options?.baseOpacity ?? 0.065 },
-      uMaxFresnelOpacity: { value: options?.maxFresnelOpacity ?? 0.44 },
-      uBevelWidth: { value: options?.bevelWidth ?? 0.042 },
+      uBaseOpacity: { value: options?.baseOpacity ?? 0.06 },
+      uMaxFresnelOpacity: { value: options?.maxFresnelOpacity ?? 0.38 },
+      uBevelWidth: { value: options?.bevelWidth ?? 0.022 },
+      uBevelStrength: { value: options?.bevelStrength ?? 0.22 },
     },
     vertexShader: `
       varying vec2 vUv;
@@ -955,6 +1063,7 @@ export function createArchitecturalGlassMaterial(
       uniform float uBaseOpacity;
       uniform float uMaxFresnelOpacity;
       uniform float uBevelWidth;
+      uniform float uBevelStrength;
 
       varying vec2 vUv;
       varying vec3 vWorldPos;
@@ -1018,19 +1127,20 @@ export function createArchitecturalGlassMaterial(
                              lampCol * (lampSpec * 0.58) +
                              mix(uHighlightWarmth, vec3(1.0), 0.45) * (winSpec * 0.65);
 
-        // Combine subtle clear-glass body tint, green-teal edge thickness, Fresnel reflection & polished bevel highlight
-        vec3 glassBody = mix(uTint, uEdgeTint, edgeAbsorb * 0.78);
-        vec3 bevelGlint = mix(uRimColor, vec3(1.0, 0.98, 0.94), 0.62) * bevelLine * (0.28 + 0.42 * topLeftBevel);
-        vec3 finalRgb = mix(glassBody, reflectionCol, clamp(fresnel * 1.35 + 0.22, 0.0, 0.95)) + bevelGlint;
+        // Combine subtle clear-glass body tint, soft grey/tinted edge absorption, Fresnel reflection & delicate bevel catchlight
+        vec3 glassBody = mix(uTint, uEdgeTint, edgeAbsorb * 0.58);
+        vec3 bevelCol = mix(uEdgeTint * 1.18, uRimColor, 0.25);
+        vec3 bevelGlint = bevelCol * bevelLine * (0.20 + 0.30 * topLeftBevel) * uBevelStrength;
+        vec3 finalRgb = mix(glassBody, reflectionCol, clamp(fresnel * 1.25 + 0.18, 0.0, 0.92)) + bevelGlint;
 
-        // Alpha: ultra-clear straight on so dishes inside shine crisply; physically rises at grazing angles, highlights & beveled edges
-        float specAlpha = (winSpec * 0.36 + lampSpec * 0.28 + winSoftboxCore * 0.16);
-        float alpha = mix(uBaseOpacity, uMaxFresnelOpacity, clamp(fresnel * 1.18, 0.0, 1.0)) +
-                      edgeAbsorb * 0.16 +
-                      bevelLine * 0.18 +
+        // Alpha: crystal-clear straight on, refined subtle grey edge without harsh bright white framing
+        float specAlpha = (winSpec * 0.30 + lampSpec * 0.22 + winSoftboxCore * 0.12);
+        float alpha = mix(uBaseOpacity, uMaxFresnelOpacity, clamp(fresnel * 1.12, 0.0, 1.0)) +
+                      edgeAbsorb * (0.09 * clamp(uBevelStrength * 2.2, 0.25, 1.0)) +
+                      bevelLine * (0.06 * uBevelStrength) +
                       specAlpha;
 
-        gl_FragColor = vec4(clamp(finalRgb, vec3(0.0), vec3(1.8)), clamp(alpha, 0.05, 0.78));
+        gl_FragColor = vec4(clamp(finalRgb, vec3(0.0), vec3(1.6)), clamp(alpha, 0.04, 0.72));
       }
     `,
     transparent: true,
@@ -3783,7 +3893,7 @@ export function createProceduralTextures(renderer: THREE.WebGLRenderer): Procedu
     sofaArtworks.push(track(finalizeTexture(c, maxAniso)));
   }
 
-  // 14. Clean Silky Warm Honey-Oak Wooden Door Texture (zero stray vertical stripes — lets 3D recessed panel grooves shine!)
+  // 14. Seamless Warm Honey-Oak Wooden Door Texture (balanced continuous vertical grain, zero dark seam bands!)
   const doorCanvas = document.createElement('canvas');
   doorCanvas.width = 512;
   doorCanvas.height = 1024;
@@ -3793,42 +3903,17 @@ export function createProceduralTextures(renderer: THREE.WebGLRenderer): Procedu
   doorBumpCanvas.height = 1024;
   const doorBumpCtx = doorBumpCanvas.getContext('2d')!;
 
-  // Smooth warm luminous honey-oak base gradient
+  // Smooth, balanced honey-oak base with very gentle continuous natural warmth (no dark horizontal splice bands)
   const doorBaseGrad = doorCtx.createLinearGradient(0, 0, 0, 1024);
-  doorBaseGrad.addColorStop(0.0, '#f7dba9');
-  doorBaseGrad.addColorStop(0.48, '#efc687');
-  doorBaseGrad.addColorStop(1.0, '#e1b16d');
+  doorBaseGrad.addColorStop(0.0, '#f4d7a2');
+  doorBaseGrad.addColorStop(0.5, '#eec98c');
+  doorBaseGrad.addColorStop(1.0, '#e6be7d');
   doorCtx.fillStyle = doorBaseGrad;
   doorCtx.fillRect(0, 0, 512, 1024);
   doorBumpCtx.fillStyle = '#848484';
   doorBumpCtx.fillRect(0, 0, 512, 1024);
 
-  // Subtle soft perimeter edge shading around the outer door leaf (no interior vertical stripes!)
-  const edgeGradL = doorCtx.createLinearGradient(0, 0, 44, 0);
-  edgeGradL.addColorStop(0, 'rgba(138, 92, 64, 0.16)');
-  edgeGradL.addColorStop(1, 'rgba(138, 92, 64, 0.0)');
-  doorCtx.fillStyle = edgeGradL;
-  doorCtx.fillRect(0, 0, 44, 1024);
-
-  const edgeGradR = doorCtx.createLinearGradient(512, 0, 468, 0);
-  edgeGradR.addColorStop(0, 'rgba(138, 92, 64, 0.16)');
-  edgeGradR.addColorStop(1, 'rgba(138, 92, 64, 0.0)');
-  doorCtx.fillStyle = edgeGradR;
-  doorCtx.fillRect(468, 0, 44, 1024);
-
-  const edgeGradT = doorCtx.createLinearGradient(0, 0, 0, 48);
-  edgeGradT.addColorStop(0, 'rgba(138, 92, 64, 0.14)');
-  edgeGradT.addColorStop(1, 'rgba(138, 92, 64, 0.0)');
-  doorCtx.fillStyle = edgeGradT;
-  doorCtx.fillRect(0, 0, 512, 48);
-
-  const edgeGradB = doorCtx.createLinearGradient(0, 1024, 0, 964);
-  edgeGradB.addColorStop(0, 'rgba(138, 92, 64, 0.18)');
-  edgeGradB.addColorStop(1, 'rgba(138, 92, 64, 0.0)');
-  doorCtx.fillStyle = edgeGradB;
-  doorCtx.fillRect(0, 964, 512, 60);
-
-  // Whisper-soft wide organic honey-oak satin wood tone flow (zero rigid vertical lines!)
+  // Ultra-soft wide continuous oak satin bands running unbroken from top to bottom
   for (let w = 0; w < 14; w++) {
     const cx = 36 + w * 34;
     const bandGrad = doorCtx.createLinearGradient(cx - 26, 0, cx + 26, 0);
@@ -3836,42 +3921,45 @@ export function createProceduralTextures(renderer: THREE.WebGLRenderer): Procedu
     bandGrad.addColorStop(0, 'rgba(255, 240, 214, 0)');
     bandGrad.addColorStop(
       0.5,
-      warmShift ? 'rgba(255, 244, 224, 0.055)' : 'rgba(176, 122, 74, 0.042)'
+      warmShift ? 'rgba(255, 244, 224, 0.050)' : 'rgba(176, 122, 74, 0.036)'
     );
     bandGrad.addColorStop(1, 'rgba(255, 240, 214, 0)');
     doorCtx.fillStyle = bandGrad;
     doorCtx.fillRect(cx - 26, 0, 52, 1024);
 
-    // Matching ultra-gentle smooth wood figure in bump map
     const bGrad = doorBumpCtx.createLinearGradient(cx - 22, 0, cx + 22, 0);
     bGrad.addColorStop(0, 'rgba(132, 132, 132, 0)');
-    bGrad.addColorStop(0.5, warmShift ? 'rgba(154, 154, 154, 0.18)' : 'rgba(110, 110, 110, 0.18)');
+    bGrad.addColorStop(0.5, warmShift ? 'rgba(150, 150, 150, 0.16)' : 'rgba(114, 114, 114, 0.16)');
     bGrad.addColorStop(1, 'rgba(132, 132, 132, 0)');
     doorBumpCtx.fillStyle = bGrad;
     doorBumpCtx.fillRect(cx - 22, 0, 44, 1024);
   }
 
-  // Delicate curved cathedral grain halos (ultra-low contrast, organic & warm)
-  for (let a = 0; a < 9; a++) {
-    const gx = 72 + ((a * 113) % 368);
-    const gy = 140 + ((a * 197) % 740);
-    const grx = 34 + (a % 3) * 18;
-    const gry = 150 + (a % 4) * 55;
-    doorCtx.strokeStyle = a % 2 === 0 ? 'rgba(164, 112, 68, 0.045)' : 'rgba(255, 244, 224, 0.06)';
-    doorCtx.lineWidth = 3.2;
+  // Delicate elongated vertical oak cathedral grain flowing naturally across the full door height
+  for (let a = 0; a < 8; a++) {
+    const gx = 68 + ((a * 119) % 376);
+    const gy = 180 + ((a * 211) % 660);
+    const grx = 32 + (a % 3) * 16;
+    const gry = 190 + (a % 3) * 70;
+    doorCtx.strokeStyle = a % 2 === 0 ? 'rgba(164, 112, 68, 0.040)' : 'rgba(255, 244, 224, 0.052)';
+    doorCtx.lineWidth = 3.0;
     doorCtx.beginPath();
     doorCtx.ellipse(gx, gy, grx, gry, 0, 0, Math.PI * 2);
     doorCtx.stroke();
 
-    doorBumpCtx.strokeStyle = 'rgba(118, 118, 118, 0.14)';
-    doorBumpCtx.lineWidth = 2.6;
+    doorBumpCtx.strokeStyle = 'rgba(118, 118, 118, 0.12)';
+    doorBumpCtx.lineWidth = 2.4;
     doorBumpCtx.beginPath();
     doorBumpCtx.ellipse(gx, gy, grx, gry, 0, 0, Math.PI * 2);
     doorBumpCtx.stroke();
   }
 
   const woodDoor = track(finalizeTexture(doorCanvas, maxAniso, 1, 1));
+  woodDoor.wrapS = THREE.ClampToEdgeWrapping;
+  woodDoor.wrapT = THREE.ClampToEdgeWrapping;
   const woodDoorBump = track(finalizeTexture(doorBumpCanvas, maxAniso, 1, 1, true));
+  woodDoorBump.wrapS = THREE.ClampToEdgeWrapping;
+  woodDoorBump.wrapT = THREE.ClampToEdgeWrapping;
 
   // 16. Retro Arcade Top Marquee ("IRON TREADS // 铁甲战线 1986")
   const marqCanvas = document.createElement('canvas');
@@ -4953,7 +5041,7 @@ export function createProceduralTextures(renderer: THREE.WebGLRenderer): Procedu
   }
 
   const bookSpecs: BookAtlasSpec[] = [
-    // Row 0: Manga Series (0-3) — soft pastel tinted spines so zero books look blank white
+    // Row 0: Japanese Manga Series (0-3) — soft pastel tinted spines with authentic JP lettering
     {
       cat: 'manga',
       bg: '#f7fafd',
@@ -4961,8 +5049,8 @@ export function createProceduralTextures(renderer: THREE.WebGLRenderer): Procedu
       accent1: '#5da6dc',
       accent2: '#ef8677',
       ink: '#2a3748',
-      title: '星塵電車',
-      spineTitle: '星塵電車',
+      title: '星屑トラム',
+      spineTitle: '星屑トラム',
       subtitle: 'STARDUST TRAM · VOL.1',
       vol: '01',
       motif: 'manga_burst',
@@ -4974,8 +5062,8 @@ export function createProceduralTextures(renderer: THREE.WebGLRenderer): Procedu
       accent1: '#59b996',
       accent2: '#f0ac5e',
       ink: '#283b35',
-      title: '星塵電車',
-      spineTitle: '星塵電車',
+      title: '星屑トラム',
+      spineTitle: '星屑トラム',
       subtitle: 'STARDUST TRAM · VOL.2',
       vol: '02',
       motif: 'manga_mint',
@@ -4987,8 +5075,8 @@ export function createProceduralTextures(renderer: THREE.WebGLRenderer): Procedu
       accent1: '#ea9362',
       accent2: '#719ed4',
       ink: '#3a2d27',
-      title: '星塵電車',
-      spineTitle: '星塵電車',
+      title: '星屑トラム',
+      spineTitle: '星屑トラム',
       subtitle: 'STARDUST TRAM · VOL.3',
       vol: '03',
       motif: 'manga_peach',
@@ -5000,14 +5088,14 @@ export function createProceduralTextures(renderer: THREE.WebGLRenderer): Procedu
       accent1: '#be89cc',
       accent2: '#efbc74',
       ink: '#392a40',
-      title: '猫与黄昏',
-      spineTitle: '猫与黄昏',
+      title: '猫と黄昏',
+      spineTitle: '猫と黄昏',
       subtitle: 'NEKO TO TASOGARE · 4',
       vol: '04',
       motif: 'manga_cat',
     },
 
-    // Row 1: Literary Fiction (4-7)
+    // Row 1: Literary Fiction — Curated Mix of Japanese & English Titles (4-7)
     {
       cat: 'literature',
       bg: '#f5efe3',
@@ -5015,8 +5103,8 @@ export function createProceduralTextures(renderer: THREE.WebGLRenderer): Procedu
       accent1: '#86ab8c',
       accent2: '#d99e75',
       ink: '#3b352f',
-      title: '海边慢信',
-      spineTitle: '海边慢信',
+      title: '海辺の手紙',
+      spineTitle: '海辺の手紙',
       subtitle: 'LETTERS BY THE TIDE',
       vol: 'Ⅰ',
       obiColor: '#f6df98',
@@ -5029,9 +5117,9 @@ export function createProceduralTextures(renderer: THREE.WebGLRenderer): Procedu
       accent1: '#fbf8f2',
       accent2: '#d6a468',
       ink: '#2d3f52',
-      title: '九月玻璃窗',
-      spineTitle: '九月玻璃窗',
-      subtitle: 'SEPTEMBER GLASS',
+      title: 'SEPTEMBER',
+      spineTitle: 'SEPTEMBER GLASS',
+      subtitle: 'NEW EDITION · ESSAYS',
       vol: 'Ⅱ',
       obiColor: '#f5efe6',
       motif: 'lit_window',
@@ -5043,9 +5131,9 @@ export function createProceduralTextures(renderer: THREE.WebGLRenderer): Procedu
       accent1: '#c26f68',
       accent2: '#7d9288',
       ink: '#42302d',
-      title: '失眠动物园',
-      spineTitle: '失眠动物园',
-      subtitle: 'NOCTURNE ZOO',
+      title: '真夜中珈琲',
+      spineTitle: '真夜中珈琲',
+      subtitle: 'MIDNIGHT KISSA · TOKYO',
       vol: 'Ⅲ',
       obiColor: '#fbf7ee',
       motif: 'lit_zoo',
@@ -5057,15 +5145,15 @@ export function createProceduralTextures(renderer: THREE.WebGLRenderer): Procedu
       accent1: '#d88966',
       accent2: '#6e8ea3',
       ink: '#3a342c',
-      title: '白昼候鸟',
-      spineTitle: '白昼候鸟',
-      subtitle: 'DAYLIGHT MIGRATION',
+      title: 'STILL LIFE',
+      spineTitle: 'STILL WATER',
+      subtitle: 'MORNING SKETCHES',
       vol: 'Ⅳ',
       obiColor: '#c7decb',
       motif: 'lit_bird',
     },
 
-    // Row 2: Philosophy & Essays (8-11)
+    // Row 2: Philosophy & Essays — Curated Mix of English & Japanese Titles (8-11)
     {
       cat: 'philosophy',
       bg: '#f2f1ec',
@@ -5073,9 +5161,9 @@ export function createProceduralTextures(renderer: THREE.WebGLRenderer): Procedu
       accent1: '#7e938a',
       accent2: '#bfa486',
       ink: '#2d3130',
-      title: '存在与回声',
-      spineTitle: '存在与回声',
-      subtitle: 'BEING & RESONANCE',
+      title: 'SILENCE',
+      spineTitle: 'BEING & SILENCE',
+      subtitle: 'PHENOMENOLOGY NOTES',
       vol: 'II',
       motif: 'phil_frame',
     },
@@ -5086,8 +5174,8 @@ export function createProceduralTextures(renderer: THREE.WebGLRenderer): Procedu
       accent1: '#697485',
       accent2: '#c9a67a',
       ink: '#2d3036',
-      title: '时间之褶',
-      spineTitle: '时间之褶',
+      title: '時間の襞',
+      spineTitle: '時間の襞',
       subtitle: 'THE FOLD OF TIME',
       vol: 'IV',
       motif: 'phil_rings',
@@ -5099,9 +5187,9 @@ export function createProceduralTextures(renderer: THREE.WebGLRenderer): Procedu
       accent1: '#8f8762',
       accent2: '#b87f64',
       ink: '#363229',
-      title: '漫步沉思录',
-      spineTitle: '漫步沉思录',
-      subtitle: 'REVERIES OF A WALKER',
+      title: 'REVERIES',
+      spineTitle: 'WALKING NOTES',
+      subtitle: 'SOLITARY REFLECTIONS',
       vol: 'I',
       motif: 'phil_diamond',
     },
@@ -5112,8 +5200,8 @@ export function createProceduralTextures(renderer: THREE.WebGLRenderer): Procedu
       accent1: '#5d738a',
       accent2: '#c79a7e',
       ink: '#2a3440',
-      title: '语言边界论',
-      spineTitle: '语言边界论',
+      title: 'ことばの境界',
+      spineTitle: 'ことばの境界',
       subtitle: 'LIMITS OF LANGUAGE',
       vol: 'III',
       motif: 'phil_grid',
@@ -5141,8 +5229,8 @@ export function createProceduralTextures(renderer: THREE.WebGLRenderer): Procedu
       accent2: '#d9a45b',
       ink: '#222b36',
       title: 'SYNTH 98',
-      spineTitle: 'ACOUSTIC SYNTH',
-      subtitle: 'FM & ANALOG ACOUSTICS',
+      spineTitle: 'ANALOG SYNTH',
+      subtitle: 'FM & ACOUSTIC DESIGN',
       vol: '09',
       motif: 'tech_wave',
     },
@@ -5236,16 +5324,16 @@ export function createProceduralTextures(renderer: THREE.WebGLRenderer): Procedu
       bk.font = 'bold 9px monospace';
       bk.fillText('COMICS', tx + 28, ty + 229);
 
-      // Vertical manga title characters
+      // Vertical Japanese manga title characters
       bk.fillStyle = spec.ink;
-      bk.font = 'bold 16px "Noto Sans SC", "Plus Jakarta Sans", sans-serif';
+      bk.font = 'bold 15px "Noto Sans JP", "Hiragino Sans", sans-serif';
       bk.textAlign = 'center';
       const chars = [...spec.spineTitle];
       chars.forEach((chStr, ci) => {
-        bk.fillText(chStr, tx + 28, ty + 78 + ci * 26);
+        bk.fillText(chStr, tx + 28, ty + 74 + ci * 24);
       });
     } else if (spec.cat === 'literature') {
-      // Literature spine: airy minimal serif title + soft pastel obi belly-band wrapped across bottom!
+      // Literature spine: airy minimal serif title (vertical JP or rotated EN) + soft pastel obi belly-band!
       if (spec.obiColor) {
         bk.fillStyle = spec.obiColor;
         bk.fillRect(tx, ty + 180, 224, 52);
@@ -5255,14 +5343,26 @@ export function createProceduralTextures(renderer: THREE.WebGLRenderer): Procedu
       bk.fillStyle = spec.accent1;
       bk.fillRect(tx + 18, ty + 18, 20, 3);
       bk.fillStyle = spec.ink;
-      bk.font = '600 14px Georgia, "Noto Serif SC", serif';
-      bk.textAlign = 'center';
-      const chars = [...spec.spineTitle];
-      chars.forEach((chStr, ci) => {
-        bk.fillText(chStr, tx + 28, ty + 56 + ci * 22);
-      });
+      const isLatinLit = /^[\x20-\x7E]+$/.test(spec.spineTitle);
+      if (isLatinLit) {
+        bk.save();
+        bk.translate(tx + 32, ty + 104);
+        bk.rotate(-Math.PI / 2);
+        bk.font = '600 11.5px Georgia, serif';
+        bk.textAlign = 'center';
+        bk.fillText(spec.spineTitle, 0, 0);
+        bk.restore();
+      } else {
+        bk.font = '600 14px "Noto Serif JP", Georgia, serif';
+        bk.textAlign = 'center';
+        const chars = [...spec.spineTitle];
+        chars.forEach((chStr, ci) => {
+          bk.fillText(chStr, tx + 28, ty + 54 + ci * 22);
+        });
+      }
       bk.fillStyle = spec.ink;
       bk.font = '10px Georgia, serif';
+      bk.textAlign = 'center';
       bk.fillText(spec.vol, tx + 28, ty + 212);
     } else if (spec.cat === 'philosophy') {
       // Philosophy spine: understated classical double-hairline bands & refined Roman numeral
@@ -5271,16 +5371,29 @@ export function createProceduralTextures(renderer: THREE.WebGLRenderer): Procedu
       bk.fillRect(tx + 8, ty + 25, 40, 1.5);
       bk.fillRect(tx + 8, ty + 224, 40, 1.5);
       bk.fillStyle = spec.accent1;
-      bk.fillRect(tx + 10, ty + 42, 36, 118);
+      bk.fillRect(tx + 10, ty + 42, 36, 128);
       bk.fillStyle = '#faf8f2';
-      bk.font = '600 13px Georgia, "Noto Serif SC", serif';
-      bk.textAlign = 'center';
-      const chars = [...spec.spineTitle];
-      chars.forEach((chStr, ci) => {
-        bk.fillText(chStr, tx + 28, ty + 64 + ci * 20);
-      });
+      const isLatinPhil = /^[\x20-\x7E]+$/.test(spec.spineTitle);
+      if (isLatinPhil) {
+        bk.save();
+        bk.translate(tx + 32, ty + 106);
+        bk.rotate(-Math.PI / 2);
+        bk.font = '600 10.5px Georgia, serif';
+        bk.textAlign = 'center';
+        bk.fillText(spec.spineTitle, 0, 0);
+        bk.restore();
+      } else {
+        bk.font = '600 12.5px "Noto Serif JP", Georgia, serif';
+        bk.textAlign = 'center';
+        const chars = [...spec.spineTitle];
+        const stepY = chars.length >= 6 ? 18 : 21;
+        chars.forEach((chStr, ci) => {
+          bk.fillText(chStr, tx + 28, ty + 62 + ci * stepY);
+        });
+      }
       bk.fillStyle = spec.ink;
       bk.font = 'italic 12px Georgia, serif';
+      bk.textAlign = 'center';
       bk.fillText(spec.vol, tx + 28, ty + 204);
     } else if (spec.cat === 'technical') {
       // Technical / Design spine: crisp Swiss grid stripe + rotated clean sans-serif title

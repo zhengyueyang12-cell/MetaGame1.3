@@ -205,13 +205,14 @@ export function buildDiningAndKitchen(ctx: RoomBuildContext): void {
     metalness: 0.0,
     woodLacquer: 0.28,
   });
-  // High-fidelity optical Fresnel & beveled architectural cabinet glass (replaces cheap painted white stripes!)
+  // High-fidelity crystal-clear cabinet glass with delicate smoked-grey perimeter edge (zero harsh white borders!)
   const cabinetGlassMat = createArchitecturalGlassMaterial(uniforms, {
-    tintHex: 0xebf6f4,
-    edgeTintHex: 0x7ab4aa,
-    baseOpacity: 0.06,
-    maxFresnelOpacity: 0.44,
-    bevelWidth: 0.044,
+    tintHex: 0xe6eaee,
+    edgeTintHex: 0x5d656f,
+    baseOpacity: 0.05,
+    maxFresnelOpacity: 0.34,
+    bevelWidth: 0.018,
+    bevelStrength: 0.14,
   });
   // Light-green linen tablecloth with red & dark-green small floral vine pattern + scalloped ivory lace hem
   const tableclothMat = mat({
@@ -842,17 +843,19 @@ export function buildDiningAndKitchen(ctx: RoomBuildContext): void {
     ceilingGroup.add(pGroup);
   };
 
-  buildDomePendant(DINING_CX, 2.25, DINING_CZ);
-  buildDomePendant(4.55, 2.28, 4.85);
+  // Align Dining Dome Pendant strictly with the sculpted ceiling medallion center (0.32, 3.204, 4.25)
+  const DINING_CEIL_CX = 0.32;
+  const DINING_CEIL_CZ = 4.25;
+  buildDomePendant(DINING_CEIL_CX, 2.254, DINING_CEIL_CZ);
 
   const diningLight = new THREE.PointLight(0xffcfa8, 0.86, 13.5, 0.90);
-  diningLight.position.set(DINING_CX, 2.15, DINING_CZ);
+  diningLight.position.set(DINING_CEIL_CX, 2.15, DINING_CEIL_CZ);
   scene.add(diningLight);
 
   registerCeilingLamp({
     id: 'lamp_dining',
     room: 'dining',
-    position: new THREE.Vector3(DINING_CX, 2.23, DINING_CZ),
+    position: new THREE.Vector3(DINING_CEIL_CX, 2.23, DINING_CEIL_CZ),
     light: diningLight,
     bulbMaterials: [pendantBulbMat],
     baseIntensity: 0.86,

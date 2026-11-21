@@ -236,6 +236,8 @@ export interface RoomBuildContext {
       bulbMats: THREE.MeshBasicMaterial[];
       switchRockers: THREE.Object3D[];
       switchLedMats: THREE.MeshBasicMaterial[];
+      fanRotor: THREE.Object3D | null;
+      fanSpeed: number;
       onToggleNotify?: (isOn: boolean) => void;
     };
     livingTv: {
@@ -494,18 +496,30 @@ export function createRoomBuildContext(
     const isAlongZ = axisDir === 'z+' || axisDir === 'z-';
     const dirSign = axisDir === 'z+' || axisDir === 'x+' ? 1 : -1;
 
-    // Derive clear luminous honey satin-matte oak door materials (matching MiSide wood furniture)
+    // Derive unified luminous honey satin-matte oak door material with geometry-based recessed depth shading
     const baseDoorColor =
       (doorMat as THREE.MeshStandardMaterial).color?.clone() ??
       new THREE.Color(0xfff6e6);
-    const texturedDoorLeafMat = mat({
+    const doorThick = 0.058;
+    const doorHalfThick = doorThick * 0.5; // 0.029m
+    const recessCoreThick = 0.022; // True 18mm physical recess depth on BOTH sides
+    const recessCoreHalf = recessCoreThick * 0.5; // 0.011m
+    const maxRecessDepth = doorHalfThick - recessCoreHalf; // 0.018m
+
+    const doorLeafMat = mat({
       map: textures.woodDoor,
       bumpMap: textures.woodDoorBump,
-      bumpScale: 0.007,
-      color: baseDoorColor.clone().lerp(new THREE.Color(0xfff9ed), 0.35),
-      roughness: 0.58,
+      bumpScale: 0.0055,
+      color: baseDoorColor.clone().lerp(new THREE.Color(0xfff8eb), 0.30),
+      roughness: 0.57,
       metalness: 0.0,
       woodLacquer: 0.52,
+      doorDepthRelief: {
+        halfThick: doorHalfThick,
+        maxRecessDepth,
+        doorHeight,
+        doorHalfWidth: doorWidth * 0.5,
+      },
     });
     const frameCasingMat = mat({
       map: textures.furnitureOak,
@@ -515,30 +529,6 @@ export function createRoomBuildContext(
       roughness: 0.60,
       metalness: 0.0,
       woodLacquer: 0.50,
-    });
-    const grooveRecessMat = mat({
-      color: new THREE.Color(0x9a6b39),
-      roughness: 0.78,
-      metalness: 0.0,
-      woodLacquer: 0.16,
-    });
-    const moldingBeadMat = mat({
-      map: textures.woodDoor,
-      bumpMap: textures.woodDoorBump,
-      bumpScale: 0.0025,
-      color: baseDoorColor.clone().multiply(new THREE.Color(0.92, 0.87, 0.80)),
-      roughness: 0.54,
-      metalness: 0.0,
-      woodLacquer: 0.52,
-    });
-    const innerPanelMat = mat({
-      map: textures.woodDoor,
-      bumpMap: textures.woodDoorBump,
-      bumpScale: 0.0025,
-      color: baseDoorColor.clone().lerp(new THREE.Color(0xfffbf2), 0.24),
-      roughness: 0.56,
-      metalness: 0.0,
-      woodLacquer: 0.52,
     });
 
     // 1. Clean Single-Layer Architectural Doorway Architrave Frame (Jambs + Header Casing)
@@ -569,16 +559,16 @@ export function createRoomBuildContext(
     frameGroup.add(header);
     structureGroup.add(frameGroup);
 
-    // 2. Pivoting Solid-Oak Door Leaf with True 3D Recessed Coffer Panels (立体凹陷池板线)
+    // 2. Pivoting Solid-Oak Door Leaf with Seamless Monolithic 3D Carved Recessed Panels
+    //    All sub-geometries are pre-baked into ONE unified door-leaf local space
+    //    (X in [-W/2, +W/2], Y in [0, H], Z in [-doorHalfThick, +doorHalfThick]) so
+    //    aOrigPos, aOrigNormal, UV grain, and geometry-based depth shadows flow
+    //    with 100% continuity from bottom to top — zero black outlines & zero splice seams!
     const pivot = new THREE.Group();
     pivot.userData.dynamic = true;
     pivot.position.set(hingeX, hingeY, hingeZ);
     structureGroup.add(pivot);
 
-    const doorThick = 0.054;
-    const recessCoreThick = 0.024; // 15mm true physical recess depth on BOTH door faces!
-
-    // Local door-leaf space: X = door width, Y = height (0..doorHeight), Z = thickness
     const leafGroup = new THREE.Group();
     if (isAlongZ) {
       leafGroup.position.set(0, 0, dirSign * (doorWidth / 2));
@@ -588,138 +578,159 @@ export function createRoomBuildContext(
     }
     pivot.add(leafGroup);
 
-    const stileW = Math.max(0.115, doorWidth * 0.145);
+    const stileW = Math.max(0.115, doorWidth * 0.148);
     const innerW = doorWidth - stileW * 2;
     const botRailH = doorHeight * 0.105;
-    const lowerTopY = doorHeight * 0.385;
-    const midTopY = doorHeight * 0.485;
-    const upperTopY = doorHeight * 0.905;
-    const topRailH = doorHeight - upperTopY;
-    const midRailH = midTopY - lowerTopY;
+    const lowerTopY = doorHeight * 0.388;
+    const midTopY = doorHeight * 0.488;
+    const upperTopY = doorHeight * 0.902;
 
-    // 2A. Continuous recessed inner core panel spanning both coffers (zero gaps/light leaks)
-    const coreMesh = new THREE.Mesh(
-      createBeveledBox(innerW + 0.024, doorHeight - 0.06, recessCoreThick, 0.002, 1),
-      innerPanelMat
-    );
-    coreMesh.position.set(0, doorHeight / 2, 0);
+    // Single unified clamped planar+edge UV projector in baked door-leaf space
+    const applyUnifiedDoorUVs = (geo: THREE.BufferGeometry): void => {
+      const pos = geo.attributes.position as THREE.BufferAttribute;
+      const norm = geo.attributes.normal as THREE.BufferAttribute | undefined;
+      let uv = geo.attributes.uv as THREE.BufferAttribute | undefined;
+      if (!uv || uv.count !== pos.count) {
+        uv = new THREE.BufferAttribute(new Float32Array(pos.count * 2), 2);
+        geo.setAttribute('uv', uv);
+      }
+      for (let i = 0; i < pos.count; i++) {
+        const px = pos.getX(i);
+        const py = pos.getY(i);
+        const pz = pos.getZ(i);
+        const nx = norm ? Math.abs(norm.getX(i)) : 0;
+        const ny = norm ? Math.abs(norm.getY(i)) : 0;
+        // Subtle Z offset only on 90-degree perimeter/wall faces so wood grain wraps cleanly without streaks
+        const uRaw = (px + doorWidth * 0.5 + (nx > 0.72 ? pz * 0.45 : 0)) / doorWidth;
+        const vRaw = (py + (ny > 0.72 ? pz * 0.45 : 0)) / doorHeight;
+        uv.setXY(
+          i,
+          THREE.MathUtils.clamp(uRaw, 0.004, 0.996),
+          THREE.MathUtils.clamp(vRaw, 0.004, 0.996)
+        );
+      }
+      uv.needsUpdate = true;
+    };
+
+    // 2A. Continuous watertight recessed inner oak core (pre-baked into Y = 0..doorHeight)
+    const coreGeo = new THREE.BoxGeometry(doorWidth - 0.004, doorHeight - 0.004, recessCoreThick);
+    coreGeo.translate(0, doorHeight * 0.5, 0);
+    applyUnifiedDoorUVs(coreGeo);
+    const coreMesh = new THREE.Mesh(coreGeo, doorLeafMat);
+    coreMesh.castShadow = true;
     coreMesh.receiveShadow = true;
     leafGroup.add(coreMesh);
 
-    // 2B. Full-thickness outer stiles & horizontal rails forming the deep recessed openings
-    const stileGeo = createBeveledBox(stileW, doorHeight, doorThick, 0.005, 2);
-    for (const sSign of [-1, 1] as const) {
-      const stile = new THREE.Mesh(stileGeo, texturedDoorLeafMat);
-      stile.position.set(sSign * (doorWidth / 2 - stileW / 2), doorHeight / 2, 0);
-      stile.castShadow = true;
-      stile.receiveShadow = true;
-      outlines.addOutline(stile, 1.012);
-      leafGroup.add(stile);
-    }
+    // 2B. Monolithic seamless outer door face plates with 18mm physical recess & sculptural 4-segment bevels
+    const outerBevelSize = 0.0082;
+    const outerBevelThick = 0.0082;
+    const outerExtrudeDepth = maxRecessDepth - outerBevelThick; // 0.0098m straight reveal + 0.0082m bevel = 0.018m
 
-    const rails: [number, number][] = [
-      [botRailH / 2, botRailH],
-      [(lowerTopY + midTopY) / 2, midRailH],
-      [(upperTopY + doorHeight) / 2, topRailH],
-    ];
-    for (const [ry, rh] of rails) {
-      const rail = new THREE.Mesh(
-        createBeveledBox(innerW + 0.006, rh, doorThick, 0.005, 2),
-        texturedDoorLeafMat
-      );
-      rail.position.set(0, ry, 0);
-      rail.castShadow = true;
-      rail.receiveShadow = true;
-      leafGroup.add(rail);
-    }
+    const buildDoorFaceGeo = (): THREE.BufferGeometry => {
+      const hw = doorWidth * 0.5 - outerBevelSize;
+      const shape = new THREE.Shape();
+      shape.moveTo(-hw, outerBevelSize);
+      shape.lineTo(hw, outerBevelSize);
+      shape.lineTo(hw, doorHeight - outerBevelSize);
+      shape.lineTo(-hw, doorHeight - outerBevelSize);
+      shape.closePath();
 
-    // 2C. Sculpted 3D Stepped Chamfered Perimeter Molding + Shadow Groove + Fielded Center Panel
-    //     Creates crisp, deep architectural 凹陷池板线 on both front and back faces!
+      // Offset holes outward by outerBevelSize so the finished bevel opening matches innerW & rail heights
+      const addPanelHole = (y0: number, y1: number) => {
+        const hole = new THREE.Path();
+        const x0 = -innerW * 0.5 - outerBevelSize;
+        const x1 = innerW * 0.5 + outerBevelSize;
+        const hy0 = y0 - outerBevelSize;
+        const hy1 = y1 + outerBevelSize;
+        hole.moveTo(x0, hy0);
+        hole.lineTo(x0, hy1);
+        hole.lineTo(x1, hy1);
+        hole.lineTo(x1, hy0);
+        hole.closePath();
+        shape.holes.push(hole);
+      };
+      addPanelHole(botRailH, lowerTopY);
+      addPanelHole(midTopY, upperTopY);
+
+      const faceGeo = new THREE.ExtrudeGeometry(shape, {
+        depth: outerExtrudeDepth,
+        bevelEnabled: true,
+        bevelThickness: outerBevelThick,
+        bevelSize: outerBevelSize,
+        bevelSegments: 4,
+      });
+      // Translate so outer flat face sits at Z = +doorHalfThick (+0.029m) and back embeds into solid core
+      faceGeo.translate(0, 0, recessCoreHalf);
+      return faceGeo;
+    };
+
+    const frontFaceGeo = buildDoorFaceGeo();
+    applyUnifiedDoorUVs(frontFaceGeo);
+    const frontFace = new THREE.Mesh(frontFaceGeo, doorLeafMat);
+    frontFace.castShadow = true;
+    frontFace.receiveShadow = true;
+    // Intentionally NO inverted-hull outline on recessed door panels (pure geometry-based depth shadow!)
+    leafGroup.add(frontFace);
+
+    const backFaceGeo = buildDoorFaceGeo();
+    backFaceGeo.rotateY(Math.PI);
+    applyUnifiedDoorUVs(backFaceGeo);
+    const backFace = new THREE.Mesh(backFaceGeo, doorLeafMat);
+    backFace.castShadow = true;
+    backFace.receiveShadow = true;
+    leafGroup.add(backFace);
+
+    // 2C. Sculpted chamfered inner fielded panels leaving a crisp 22mm deep recessed shadow groove all around
     const coffers: [number, number][] = [
-      [(midTopY + upperTopY) / 2, upperTopY - midTopY],   // Tall upper recessed panel
-      [(botRailH + lowerTopY) / 2, lowerTopY - botRailH], // Balanced lower recessed panel
+      [(midTopY + upperTopY) / 2, upperTopY - midTopY],
+      [(botRailH + lowerTopY) / 2, lowerTopY - botRailH],
     ];
-    const beadW = 0.020;
-    const beadDepth = 0.011; // Steps cleanly inward from outer rail (0.027) toward core (0.012)
-    const grooveW = 0.0065;
-    const grooveDepth = 0.0032;
+    const grooveMoat = 0.022;
+    const bossBevelSize = 0.013;
+    const bossBevelThick = 0.0062;
+    const bossExtrudeDepth = 0.0046; // Rises from |z|=0.011 to |z|=0.0218 (recessed 7.2mm below outer door face)
 
     for (const [cy, ch] of coffers) {
-      const cw = innerW;
-      for (const faceSign of [-1, 1] as const) {
-        const beadZ = faceSign * (recessCoreThick / 2 + beadDepth / 2 + 0.001);
-        const grooveZ = faceSign * (recessCoreThick / 2 + grooveDepth / 2);
+      const footprintW = innerW - grooveMoat * 2;
+      const footprintH = ch - grooveMoat * 2;
+      const corePanelW = footprintW - bossBevelSize * 2;
+      const corePanelH = footprintH - bossBevelSize * 2;
+      if (corePanelW > 0.06 && corePanelH > 0.06) {
+        const buildFieldBossGeo = (): THREE.BufferGeometry => {
+          const bShape = new THREE.Shape();
+          const bhw = corePanelW * 0.5;
+          const bhh = corePanelH * 0.5;
+          bShape.moveTo(-bhw, -bhh);
+          bShape.lineTo(bhw, -bhh);
+          bShape.lineTo(bhw, bhh);
+          bShape.lineTo(-bhw, bhh);
+          bShape.closePath();
 
-        // 4-sided 3D beveled perimeter bead molding framing the recessed pocket
-        const topBead = new THREE.Mesh(
-          createBeveledBox(cw - 0.002, beadW, beadDepth, 0.0035, 2),
-          moldingBeadMat
-        );
-        topBead.position.set(0, cy + ch / 2 - beadW / 2, beadZ);
-        topBead.castShadow = true;
-        topBead.receiveShadow = true;
-        leafGroup.add(topBead);
+          const bGeo = new THREE.ExtrudeGeometry(bShape, {
+            depth: bossExtrudeDepth,
+            bevelEnabled: true,
+            bevelThickness: bossBevelThick,
+            bevelSize: bossBevelSize,
+            bevelSegments: 4,
+          });
+          bGeo.translate(0, cy, recessCoreHalf);
+          return bGeo;
+        };
 
-        const botBead = new THREE.Mesh(
-          createBeveledBox(cw - 0.002, beadW, beadDepth, 0.0035, 2),
-          moldingBeadMat
-        );
-        botBead.position.set(0, cy - ch / 2 + beadW / 2, beadZ);
-        botBead.castShadow = true;
-        botBead.receiveShadow = true;
-        leafGroup.add(botBead);
+        const frontBossGeo = buildFieldBossGeo();
+        applyUnifiedDoorUVs(frontBossGeo);
+        const frontBoss = new THREE.Mesh(frontBossGeo, doorLeafMat);
+        frontBoss.castShadow = true;
+        frontBoss.receiveShadow = true;
+        leafGroup.add(frontBoss);
 
-        const sideBeadH = ch - beadW * 2 + 0.002;
-        for (const sx of [-1, 1] as const) {
-          const sideBead = new THREE.Mesh(
-            createBeveledBox(beadW, sideBeadH, beadDepth, 0.0035, 2),
-            moldingBeadMat
-          );
-          sideBead.position.set(sx * (cw / 2 - beadW / 2), cy, beadZ);
-          sideBead.castShadow = true;
-          sideBead.receiveShadow = true;
-          leafGroup.add(sideBead);
-        }
-
-        // Crisp recessed perimeter shadow groove (凹陷池板阴角线) right inside the stepped bead
-        const gInnerW = cw - beadW * 2;
-        const gInnerH = ch - beadW * 2;
-        const topGroove = new THREE.Mesh(
-          new THREE.BoxGeometry(gInnerW, grooveW, grooveDepth),
-          grooveRecessMat
-        );
-        topGroove.position.set(0, cy + gInnerH / 2 - grooveW / 2, grooveZ);
-        leafGroup.add(topGroove);
-
-        const botGroove = new THREE.Mesh(
-          new THREE.BoxGeometry(gInnerW, grooveW, grooveDepth),
-          grooveRecessMat
-        );
-        botGroove.position.set(0, cy - gInnerH / 2 + grooveW / 2, grooveZ);
-        leafGroup.add(botGroove);
-
-        for (const sx of [-1, 1] as const) {
-          const sideGroove = new THREE.Mesh(
-            new THREE.BoxGeometry(grooveW, gInnerH - grooveW * 2, grooveDepth),
-            grooveRecessMat
-          );
-          sideGroove.position.set(sx * (gInnerW / 2 - grooveW / 2), cy, grooveZ);
-          leafGroup.add(sideGroove);
-        }
-
-        // Gently beveled recessed fielded center panel (still recessed 7mm below outer stiles!)
-        const fieldW = gInnerW - grooveW * 2 - 0.004;
-        const fieldH = gInnerH - grooveW * 2 - 0.004;
-        if (fieldW > 0.08 && fieldH > 0.08) {
-          const fieldedBoss = new THREE.Mesh(
-            createBeveledBox(fieldW, fieldH, 0.0085, 0.004, 2),
-            innerPanelMat
-          );
-          fieldedBoss.position.set(0, cy, faceSign * (recessCoreThick / 2 + 0.0035));
-          fieldedBoss.castShadow = true;
-          fieldedBoss.receiveShadow = true;
-          leafGroup.add(fieldedBoss);
-        }
+        const backBossGeo = buildFieldBossGeo();
+        backBossGeo.rotateY(Math.PI);
+        applyUnifiedDoorUVs(backBossGeo);
+        const backBoss = new THREE.Mesh(backBossGeo, doorLeafMat);
+        backBoss.castShadow = true;
+        backBoss.receiveShadow = true;
+        leafGroup.add(backBoss);
       }
     }
 
@@ -1108,6 +1119,8 @@ export function createRoomBuildContext(
         bulbMats: [],
         switchRockers: [],
         switchLedMats: [],
+        fanRotor: null,
+        fanSpeed: 0.9,
       },
       livingTv: {
         isOn: false,
