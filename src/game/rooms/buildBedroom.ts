@@ -9,6 +9,7 @@ import {
   createTurnedLegGeometry,
 } from '../geometries';
 import { mergeStaticGroupToSingleMesh } from '../SceneManager';
+import { createErgonomicSwivelChair } from '../entities/buildErgonomicChair';
 import {
   createTabletopPenSet,
   createTabletopTrinketCluster,
@@ -399,7 +400,6 @@ export function buildBedroom(ctx: RoomBuildContext, playDoorAudio: (open: boolea
   // Turned white wooden bed legs (Instanced)
   const bedLegGeo = createTurnedLegGeometry(0.038, 0.024, 0.16);
   const bedLegsInst = new THREE.InstancedMesh(bedLegGeo, whiteFurnMat, 4);
-  bedLegsInst.userData.dynamic = true;
   const bedLegCoords: [number, number][] = [
     [-1.14, -0.88],
     [1.14, -0.88],
@@ -577,7 +577,6 @@ export function buildBedroom(ctx: RoomBuildContext, playDoorAudio: (open: boolea
   const pillowsInst = new THREE.InstancedMesh(pillowGeo, sheetMat, 2);
   pillowsInst.castShadow = true;
   pillowsInst.receiveShadow = true;
-  pillowsInst.userData.dynamic = true;
   setInstanceTransform(pillowsInst, 0, -0.88, 0.65, -0.45, 0.04, 0.06, -0.24);
   setInstanceTransform(pillowsInst, 1, -0.88, 0.65, 0.45, -0.04, -0.05, -0.24);
   finalizeInstancedMesh(pillowsInst);
@@ -1441,73 +1440,24 @@ export function buildBedroom(ctx: RoomBuildContext, playDoorAudio: (open: boolea
   // Tight collider matching actual PC desk footprint (Z = -6.57..-5.67) so swivel chair rolls freely in front!
   addBoxCollider('col_pc_desk', -2.52, 0.55, -6.12, 1.92, 1.25, 0.90);
 
-  // MiSide Pastel-Pink Ergonomic Swivel Chair with Rolling Casters & Collision Sliding Physics
-  const taskChair = new THREE.Group();
+  // MiSide Refined Ergonomic Swivel Chair (Satin Cream Polymer Shell + Breathable Dusty-Rose Mesh Cushion)
+  const { rootGroup: taskChair, seatGroup: taskChairSeat } = createErgonomicSwivelChair(
+    uniforms,
+    outlines,
+    {
+      plasticFrameHex: 0xf4ecef,
+      plasticAccentHex: 0xdfd0d8,
+      meshCushionHex: 0xeab0c4,
+      meshBaseHex: '#e6a6bc',
+      meshPoreHex: '#8d576b',
+      meshHighlightHex: 'rgba(255, 240, 246, 0.45)',
+      armPadHex: 0xd9b3c0,
+      metalHex: 0xd8dce4,
+      initialSeatYaw: 0.34,
+    }
+  );
   taskChair.name = 'bed_swivel_chair';
-  taskChair.userData.dynamic = true;
   taskChair.position.set(-2.60, 0, -5.24);
-
-  const taskChairBase = new THREE.Group();
-  taskChairBase.userData.dynamic = true;
-  taskChair.add(taskChairBase);
-
-  const gasLift = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.028, 0.032, 0.42, 12),
-    silverMetalMat
-  );
-  gasLift.position.y = 0.26;
-  taskChairBase.add(gasLift);
-
-  const casterWheelMat = mat({ color: 0x3b3544, roughness: 0.45, metalness: 0.25 });
-  const spokeGeo = createBeveledBox(0.038, 0.028, 0.31, 0.008, 2);
-  const wheelGeo = new THREE.CylinderGeometry(0.024, 0.024, 0.022, 10);
-  wheelGeo.rotateZ(Math.PI / 2);
-  for (let s = 0; s < 5; s++) {
-    const ang = (s / 5) * Math.PI * 2;
-    const spoke = new THREE.Mesh(spokeGeo, pastelPinkMat);
-    spoke.position.set(Math.sin(ang) * 0.145, 0.062, Math.cos(ang) * 0.145);
-    spoke.rotation.set(0.12, ang, 0);
-    taskChairBase.add(spoke);
-
-    const wheel = new THREE.Mesh(wheelGeo, casterWheelMat);
-    wheel.position.set(Math.sin(ang) * 0.275, 0.024, Math.cos(ang) * 0.275);
-    wheel.rotation.y = ang;
-    taskChairBase.add(wheel);
-  }
-
-  // Swiveling upper seat + backrest + armrests assembly
-  const taskChairSeat = new THREE.Group();
-  taskChairSeat.userData.dynamic = true;
-  taskChairSeat.rotation.y = 0.34;
-  taskChair.add(taskChairSeat);
-
-  const cSeat = new THREE.Mesh(
-    createPlushBox(0.52, 0.068, 0.50, 0.028, 0.08),
-    softPinkFabricMat
-  );
-  cSeat.position.y = 0.49;
-  cSeat.castShadow = true;
-  outlines.addOutline(cSeat, 1.022);
-  taskChairSeat.add(cSeat);
-
-  const cBack = new THREE.Mesh(
-    createPlushBox(0.46, 0.56, 0.062, 0.028, 0.08),
-    softPinkFabricMat
-  );
-  cBack.position.set(0, 0.83, 0.24);
-  cBack.rotation.x = -0.12;
-  cBack.castShadow = true;
-  outlines.addOutline(cBack, 1.022);
-  taskChairSeat.add(cBack);
-
-  for (const side of [-1, 1]) {
-    const arm = new THREE.Mesh(
-      createBeveledBox(0.048, 0.20, 0.28, 0.015, 2),
-      pastelPinkMat
-    );
-    arm.position.set(side * 0.28, 0.61, 0.05);
-    taskChairSeat.add(arm);
-  }
 
   group.add(taskChair);
   metaState.swivelChairs.push({

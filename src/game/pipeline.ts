@@ -366,8 +366,9 @@ export function createTwilightMaterial(
     mat.userData.baseFloorFresnel = floorFresnel;
   }
 
-  mat.customProgramCacheKey = () =>
-    `twilight-miside-v23-${rimScale.toFixed(2)}-${celStrength.toFixed(2)}-${inferredLacquer.toFixed(2)}-${windSway.toFixed(2)}-${fabricCream.toFixed(1)}-${floorFresnel.toFixed(2)}`;
+  // All six twilight styling knobs are passed as uniforms (not GLSL defines), so sharing
+  // one cache key eliminates dozens of redundant WebGL shader compilations at cold start.
+  mat.customProgramCacheKey = () => 'twilight-miside-v23';
   mat.onBeforeCompile = (shader) => {
     shader.uniforms.uCelEnabled = shared.uCelEnabled;
     shader.uniforms.uOutlineEnabled = shared.uOutlineEnabled;
@@ -589,8 +590,10 @@ export function createTwilightMaterial(
 
       // Living Room smooth spatial zone mask for the Modern Overhead Chandelier ON boost
       // Strictly 0 when OFF -> 100% identical to baseline lighting & shadows!
-      float livingZoneX = smoothstep(-1.42, -0.78, vTwilightWorldPos.x) * (1.0 - smoothstep(7.15, 7.65, vTwilightWorldPos.x));
-      float livingZoneZ = smoothstep(-10.55, -9.85, vTwilightWorldPos.z) * (1.0 - smoothstep(0.02, 0.72, vTwilightWorldPos.z));
+      // Transitions sharply inside the X=-1.22 partition core (-1.21..-1.15) so the Living Room
+      // West wall face (X=-1.14) matches the other 3 walls 100% with zero bleed into the Bedroom (X=-1.30)!
+      float livingZoneX = smoothstep(-1.21, -1.15, vTwilightWorldPos.x) * (1.0 - smoothstep(7.24, 7.36, vTwilightWorldPos.x));
+      float livingZoneZ = smoothstep(-10.45, -10.22, vTwilightWorldPos.z) * (1.0 - smoothstep(0.18, 0.34, vTwilightWorldPos.z));
       float livingZoneY = smoothstep(-0.20, 0.05, vTwilightWorldPos.y) * (1.0 - smoothstep(3.38, 3.65, vTwilightWorldPos.y));
       float livingBoost = clamp(uLivingLightBoost, 0.0, 1.0) * livingZoneX * livingZoneZ * livingZoneY;
 
@@ -618,8 +621,8 @@ export function createTwilightMaterial(
 
       if (uCelEnabled > 0.5) {
         // Gentle animated window foliage/cloud dapple in Living Room window zone
-        float inLivingRoom = smoothstep(-1.35, -0.5, vTwilightWorldPos.x) *
-                             (1.0 - smoothstep(-0.10, 0.30, vTwilightWorldPos.z)) *
+        float inLivingRoom = smoothstep(-1.21, -1.15, vTwilightWorldPos.x) *
+                             (1.0 - smoothstep(0.16, 0.32, vTwilightWorldPos.z)) *
                              smoothstep(-0.15, 0.05, vTwilightWorldPos.y);
         float dynamicShadow = 1.0;
         float projectedPaneGlow = 0.0;
@@ -892,6 +895,151 @@ export function createTwilightMaterial(
   };
 
   return mat;
+}
+
+/**
+ * Physically-grounded optical architectural glass shader for display cabinets
+ * and kitchen hutches — eliminates cheap painted white stripes in favor of:
+ * - True Schlick Fresnel grazing reflections (clear straight-on, lustrous at angles)
+ * - Analytical indoor window + overhead warm lamp environment reflection & GGX specular
+ * - Soda-lime glass edge thickness absorption tint + crisp 5mm polished bevel catchlight
+ * - Subtle optical surface micro-ripple so reflections glide naturally as the camera moves
+ */
+export function createArchitecturalGlassMaterial(
+  shared: TwilightUniforms,
+  options?: {
+    tintHex?: number;
+    edgeTintHex?: number;
+    baseOpacity?: number;
+    maxFresnelOpacity?: number;
+    bevelWidth?: number;
+  }
+): THREE.ShaderMaterial {
+  const tint = new THREE.Color(options?.tintHex ?? 0xebf6f4);
+  const edgeTint = new THREE.Color(options?.edgeTintHex ?? 0x7cb6ad);
+  return new THREE.ShaderMaterial({
+    uniforms: {
+      uDaylightFactor: shared.uDaylightFactor,
+      uNightFactor: shared.uNightFactor,
+      uWindowLightDir: shared.uWindowLightDir,
+      uShaftColor: shared.uShaftColor,
+      uHighlightWarmth: shared.uHighlightWarmth,
+      uRimColor: shared.uRimColor,
+      uTint: { value: tint },
+      uEdgeTint: { value: edgeTint },
+      uBaseOpacity: { value: options?.baseOpacity ?? 0.065 },
+      uMaxFresnelOpacity: { value: options?.maxFresnelOpacity ?? 0.44 },
+      uBevelWidth: { value: options?.bevelWidth ?? 0.042 },
+    },
+    vertexShader: `
+      varying vec2 vUv;
+      varying vec3 vWorldPos;
+      varying vec3 vWorldNormal;
+      void main() {
+        vUv = uv;
+        vec4 wp = modelMatrix * vec4(position, 1.0);
+        vWorldPos = wp.xyz;
+        vWorldNormal = normalize(mat3(modelMatrix) * normal);
+        gl_Position = projectionMatrix * viewMatrix * wp;
+      }
+    `,
+    fragmentShader: `
+      uniform float uDaylightFactor;
+      uniform float uNightFactor;
+      uniform vec3 uWindowLightDir;
+      uniform vec3 uShaftColor;
+      uniform vec3 uHighlightWarmth;
+      uniform vec3 uRimColor;
+      uniform vec3 uTint;
+      uniform vec3 uEdgeTint;
+      uniform float uBaseOpacity;
+      uniform float uMaxFresnelOpacity;
+      uniform float uBevelWidth;
+
+      varying vec2 vUv;
+      varying vec3 vWorldPos;
+      varying vec3 vWorldNormal;
+
+      void main() {
+        vec3 V = normalize(cameraPosition - vWorldPos);
+        vec3 N = normalize(vWorldNormal);
+        if (!gl_FrontFacing) N = -N;
+
+        // Subtle tempered-glass surface micro-wave so room reflections breathe naturally as you walk
+        float microRipple = sin(vWorldPos.y * 9.5 + vWorldPos.z * 7.2) * 0.009;
+        vec3 Nopt = normalize(N + vec3(0.0, microRipple, -microRipple * 0.7));
+
+        // 1. Physical Schlick Fresnel (IOR ~ 1.52 -> F0 = 0.042)
+        float ndv = clamp(dot(Nopt, V), 0.0, 1.0);
+        float fresnel = 0.042 + 0.958 * pow(1.0 - ndv, 4.0);
+
+        // 2. Optical perimeter thickness absorption + crisp 5mm beveled glass edge catchlight
+        float dx = min(vUv.x, 1.0 - vUv.x);
+        float dy = min(vUv.y, 1.0 - vUv.y);
+        float edgeDist = min(dx, dy);
+
+        // Soft emerald/aqua soda-lime edge absorption within the outer bevel band
+        float edgeAbsorb = 1.0 - smoothstep(0.0, uBevelWidth * 1.45, edgeDist);
+        // Sharp polished 45-degree bevel glint right along the perimeter chamfer
+        float bevelLine = smoothstep(uBevelWidth * 0.92, uBevelWidth * 0.30, edgeDist) *
+                          (1.0 - smoothstep(uBevelWidth * 0.24, 0.002, edgeDist));
+        // Slight directional variation around bevel edges so top/side bevel catches warm window light
+        float topLeftBevel = smoothstep(0.35, 0.98, vUv.y) * 0.65 + smoothstep(0.35, 0.98, 1.0 - vUv.x) * 0.35;
+
+        // 3. Analytical Indoor Room Environment Reflection (window softbox + warm ceiling bounce + lower wood counter bounce)
+        vec3 R = reflect(-V, Nopt);
+        float skyUp = smoothstep(-0.25, 0.75, R.y);
+        vec3 lowerBounce = mix(vec3(0.46, 0.36, 0.30), vec3(0.18, 0.16, 0.24), uNightFactor);
+        vec3 upperRoom = mix(
+          mix(vec3(0.95, 0.86, 0.82), vec3(0.96, 0.98, 1.0), uDaylightFactor),
+          vec3(0.36, 0.44, 0.62),
+          uNightFactor
+        );
+        vec3 envRefl = mix(lowerBounce, upperRoom, skyUp);
+
+        // Soft diffused reflection of the bright East/South kitchen windows in reflection direction
+        vec3 winDir = normalize(mix(uWindowLightDir, vec3(-0.65, 0.38, -0.58), 0.55));
+        float winSoftbox = pow(clamp(dot(R, winDir), 0.0, 1.0), 10.0);
+        float winSoftboxCore = pow(clamp(dot(R, winDir), 0.0, 1.0), 42.0);
+        vec3 winColor = mix(uShaftColor * 1.15, vec3(0.62, 0.76, 1.0), uNightFactor * 0.65);
+
+        // Secondary warm overhead kitchen ceiling lamp reflection lobe
+        vec3 lampDir = normalize(vec3(-0.42, 0.84, -0.34));
+        vec3 Hlamp = normalize(lampDir + V);
+        float lampSpec = pow(clamp(dot(Nopt, Hlamp), 0.0, 1.0), 84.0);
+        vec3 lampCol = mix(vec3(1.0, 0.93, 0.80), vec3(1.0, 0.88, 0.72), uNightFactor);
+
+        // Primary tight specular gleam from directional room light
+        vec3 Hwin = normalize(winDir + V);
+        float winSpec = pow(clamp(dot(Nopt, Hwin), 0.0, 1.0), 128.0);
+
+        vec3 reflectionCol = envRefl * (0.68 + 0.32 * uDaylightFactor) +
+                             winColor * (winSoftbox * 0.32 + winSoftboxCore * 0.42) +
+                             lampCol * (lampSpec * 0.58) +
+                             mix(uHighlightWarmth, vec3(1.0), 0.45) * (winSpec * 0.65);
+
+        // Combine subtle clear-glass body tint, green-teal edge thickness, Fresnel reflection & polished bevel highlight
+        vec3 glassBody = mix(uTint, uEdgeTint, edgeAbsorb * 0.78);
+        vec3 bevelGlint = mix(uRimColor, vec3(1.0, 0.98, 0.94), 0.62) * bevelLine * (0.28 + 0.42 * topLeftBevel);
+        vec3 finalRgb = mix(glassBody, reflectionCol, clamp(fresnel * 1.35 + 0.22, 0.0, 0.95)) + bevelGlint;
+
+        // Alpha: ultra-clear straight on so dishes inside shine crisply; physically rises at grazing angles, highlights & beveled edges
+        float specAlpha = (winSpec * 0.36 + lampSpec * 0.28 + winSoftboxCore * 0.16);
+        float alpha = mix(uBaseOpacity, uMaxFresnelOpacity, clamp(fresnel * 1.18, 0.0, 1.0)) +
+                      edgeAbsorb * 0.16 +
+                      bevelLine * 0.18 +
+                      specAlpha;
+
+        gl_FragColor = vec4(clamp(finalRgb, vec3(0.0), vec3(1.8)), clamp(alpha, 0.05, 0.78));
+      }
+    `,
+    transparent: true,
+    depthWrite: false,
+    side: THREE.DoubleSide,
+    polygonOffset: true,
+    polygonOffsetFactor: -1,
+    polygonOffsetUnits: -1,
+  });
 }
 
 /**
@@ -1783,6 +1931,7 @@ export interface ProceduralTextures {
   brushedSteel: THREE.CanvasTexture;
   bookCoverAtlas: THREE.CanvasTexture;
   bookCoverBump: THREE.CanvasTexture;
+  vinylSleeveAtlas: THREE.CanvasTexture;
   bathroomTile: THREE.CanvasTexture;
   bathroomWall: THREE.CanvasTexture;
   bathPlaidMat: THREE.CanvasTexture;
@@ -2148,64 +2297,72 @@ export function createProceduralTextures(renderer: THREE.WebGLRenderer): Procedu
     foCtx.fillRect(0, by, foSize, bh);
   }
 
-  // Ultra-fine low-contrast silky honey-oak wood grain fibers
-  for (let i = 0; i < 92; i++) {
-    const fy = (i / 92) * foSize;
-    const w = 0.85 + (i % 3) * 0.40;
-    const isHighlight = i % 5 === 0;
+  // Ultra-fine natural quarter-sawn honey-oak wood grain fibers + subtle medullary ray flecks
+  for (let i = 0; i < 140; i++) {
+    const fy = (i / 140) * foSize;
+    const w = 0.7 + (i % 3) * 0.42;
+    const isHighlight = i % 6 === 0;
+    const isDeepVein = i % 9 === 0;
     foCtx.strokeStyle = isHighlight
-      ? 'rgba(255, 246, 220, 0.15)'
-      : i % 4 === 0
-        ? 'rgba(186, 130, 68, 0.095)'
-        : 'rgba(204, 148, 84, 0.065)';
+      ? 'rgba(255, 248, 224, 0.19)'
+      : isDeepVein
+        ? 'rgba(162, 108, 52, 0.155)'
+        : i % 3 === 0
+          ? 'rgba(186, 130, 68, 0.11)'
+          : 'rgba(206, 150, 86, 0.075)';
     foCtx.lineWidth = w;
     foCtx.beginPath();
     foCtx.moveTo(0, fy);
-    foCtx.bezierCurveTo(
-      170,
-      fy + Math.sin(i * 0.55) * 3.0,
-      340,
-      fy - Math.cos(i * 0.42) * 3.0,
-      foSize,
-      fy
-    );
+    const wave1 = Math.sin(i * 0.48) * 3.8 + Math.cos(i * 0.19) * 2.2;
+    const wave2 = -Math.cos(i * 0.37) * 3.6 + Math.sin(i * 0.23) * 1.8;
+    foCtx.bezierCurveTo(170, fy + wave1, 340, fy + wave2, foSize, fy);
     foCtx.stroke();
 
-    fobCtx.strokeStyle = isHighlight ? 'rgba(154,154,154,0.18)' : 'rgba(114,114,114,0.20)';
-    fobCtx.lineWidth = 0.85;
+    fobCtx.strokeStyle = isHighlight
+      ? 'rgba(164,164,164,0.22)'
+      : isDeepVein
+        ? 'rgba(92,92,92,0.28)'
+        : 'rgba(114,114,114,0.20)';
+    fobCtx.lineWidth = isDeepVein ? 1.05 : 0.82;
     fobCtx.beginPath();
     fobCtx.moveTo(0, fy);
-    fobCtx.bezierCurveTo(
-      170,
-      fy + Math.sin(i * 0.55) * 3.0,
-      340,
-      fy - Math.cos(i * 0.42) * 3.0,
-      foSize,
-      fy
-    );
+    fobCtx.bezierCurveTo(170, fy + wave1, 340, fy + wave2, foSize, fy);
     fobCtx.stroke();
   }
-  // Soft elongated cathedral shimmer ellipses (subtle lacquer-swept honey grain)
-  for (let c = 0; c < 4; c++) {
-    const cx = 90 + c * 115;
-    const cy = 85 + ((c * 137) % 340);
-    foCtx.strokeStyle = 'rgba(192, 136, 72, 0.075)';
-    foCtx.lineWidth = 1.05;
-    for (let r = 1; r <= 3; r++) {
+  // Organic elongated cathedral wood grain rings (nested warm honey arches)
+  for (let c = 0; c < 6; c++) {
+    const cx = 62 + c * 82;
+    const cy = 68 + ((c * 149) % 376);
+    for (let r = 1; r <= 4; r++) {
+      foCtx.strokeStyle =
+        r % 2 === 0 ? 'rgba(176, 118, 58, 0.095)' : 'rgba(196, 140, 76, 0.075)';
+      foCtx.lineWidth = 0.95 + (r % 2) * 0.35;
       foCtx.beginPath();
-      foCtx.ellipse(cx, cy, r * 38, r * 5.2, 0.03, 0, Math.PI * 2);
+      foCtx.ellipse(cx, cy, r * 34, r * 4.6, 0.025 * (c % 2 === 0 ? 1 : -1), 0, Math.PI * 2);
       foCtx.stroke();
+
+      fobCtx.strokeStyle = 'rgba(102, 102, 102, 0.18)';
+      fobCtx.lineWidth = 0.9;
+      fobCtx.beginPath();
+      fobCtx.ellipse(cx, cy, r * 34, r * 4.6, 0.025 * (c % 2 === 0 ? 1 : -1), 0, Math.PI * 2);
+      fobCtx.stroke();
     }
   }
-  // Delicate fine wood pore flecks (low contrast for smooth luminous honey finish)
-  for (let i = 0; i < 340; i++) {
+  // Subtle quarter-sawn oak medullary ray sheen ribbons & delicate fine wood pore flecks
+  for (let i = 0; i < 480; i++) {
     const px = (i * 197 + 19) % foSize;
     const py = (i * 313 + 7) % foSize;
-    const len = 7 + (i % 12);
-    foCtx.fillStyle = i % 3 === 0 ? 'rgba(255, 245, 220, 0.10)' : 'rgba(182, 126, 66, 0.065)';
-    foCtx.fillRect(px, py, len, 1);
-    fobCtx.fillStyle = 'rgba(108, 108, 108, 0.16)';
-    fobCtx.fillRect(px, py, len, 1);
+    const len = 6 + (i % 15);
+    if (i % 11 === 0) {
+      // Soft golden medullary ray fleck
+      foCtx.fillStyle = 'rgba(255, 244, 214, 0.14)';
+      foCtx.fillRect(px, py, len * 0.9, 2);
+    } else {
+      foCtx.fillStyle = i % 3 === 0 ? 'rgba(255, 245, 220, 0.11)' : 'rgba(172, 116, 56, 0.085)';
+      foCtx.fillRect(px, py, len, 1);
+      fobCtx.fillStyle = 'rgba(98, 98, 98, 0.21)';
+      fobCtx.fillRect(px, py, len, 1);
+    }
   }
   const furnitureOak = track(finalizeTexture(foCanvas, maxAniso, 1, 1));
   const furnitureWoodBump = track(finalizeTexture(fobCanvas, maxAniso, 1, 1, true));
@@ -3440,350 +3597,145 @@ export function createProceduralTextures(renderer: THREE.WebGLRenderer): Procedu
     sofaArtworks.push(track(finalizeTexture(c, maxAniso)));
   }
 
-  // Artwork 1: Satirical Caricature of a Fictional Politician (恶搞虚构政治人物的画)
-  {
+  // Helper: Loads an image onto a matte wall-harmonized archival print CanvasTexture
+  // so paintings integrate smoothly into the room's twilight/daylight/midnight wall palette.
+  const createHarmonizedGalleryPrint = (
+    url: string,
+    width: number,
+    height: number,
+    opts: {
+      baseHex: string;
+      filter: string;
+      multiplyGlaze: string;
+      warmWash: string;
+      vignetteAlpha: number;
+      fitMode: 'cover' | 'contain';
+      pixelArt?: boolean;
+    }
+  ): THREE.CanvasTexture => {
     const c = document.createElement('canvas');
-    c.width = 384;
-    c.height = 512;
-    const ctx = c.getContext('2d')!;
-    // Vintage propaganda poster mustard-ochre sunburst background
-    ctx.fillStyle = '#e0b44c';
-    ctx.fillRect(0, 0, 384, 512);
-    ctx.fillStyle = 'rgba(196, 78, 52, 0.24)';
-    for (let i = 0; i < 16; i++) {
-      const a1 = (i / 16) * Math.PI * 2;
-      const a2 = ((i + 0.5) / 16) * Math.PI * 2;
-      ctx.beginPath();
-      ctx.moveTo(192, 220);
-      ctx.lineTo(192 + Math.cos(a1) * 400, 220 + Math.sin(a1) * 400);
-      ctx.lineTo(192 + Math.cos(a2) * 400, 220 + Math.sin(a2) * 400);
-      ctx.closePath();
-      ctx.fill();
-    }
-
-    // Over-inflated pinstriped suit shoulders & pompous red sash with toy medals
-    ctx.fillStyle = '#23283d';
-    ctx.beginPath();
-    ctx.ellipse(192, 430, 148, 115, 0, Math.PI, Math.PI * 2);
-    ctx.fill();
-    ctx.lineWidth = 5;
-    ctx.strokeStyle = '#151724';
-    ctx.stroke();
-
-    // White shirt collar & huge polka-dot tie
-    ctx.fillStyle = '#f7f2eb';
-    ctx.beginPath();
-    ctx.moveTo(148, 315);
-    ctx.lineTo(236, 315);
-    ctx.lineTo(192, 395);
-    ctx.closePath();
-    ctx.fill();
-
-    ctx.fillStyle = '#d13838';
-    ctx.beginPath();
-    ctx.moveTo(182, 330);
-    ctx.lineTo(202, 330);
-    ctx.lineTo(212, 425);
-    ctx.lineTo(192, 448);
-    ctx.lineTo(172, 425);
-    ctx.closePath();
-    ctx.fill();
-
-    // Ridiculous row of medals (pizza slice, rubber duck, gold star)
-    for (let m = 0; m < 4; m++) {
-      const mx = 102 + m * 24;
-      const my = 368 + (m % 2) * 12;
-      ctx.fillStyle = m % 2 === 0 ? '#4ca6d9' : '#65b858';
-      ctx.fillRect(mx - 6, my - 18, 12, 16);
-      ctx.fillStyle = '#f5cb42';
-      ctx.beginPath();
-      ctx.arc(mx, my + 4, 9, 0, Math.PI * 2);
-      ctx.fill();
-    }
-
-    // Giant pear-shaped caricatured head with rosy jowls
-    ctx.fillStyle = '#f2bca0';
-    ctx.beginPath();
-    ctx.ellipse(192, 232, 86, 94, 0, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.beginPath();
-    ctx.ellipse(192, 276, 104, 62, 0, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.strokeStyle = '#2b1e1c';
-    ctx.lineWidth = 4.5;
-    ctx.stroke();
-
-    // Rosy bluster cheeks
-    ctx.fillStyle = 'rgba(224, 92, 92, 0.45)';
-    ctx.beginPath();
-    ctx.arc(124, 262, 24, 0, Math.PI * 2);
-    ctx.arc(260, 262, 24, 0, Math.PI * 2);
-    ctx.fill();
-
-    // Tiny crooked gold crown + absurdly tall top-hat perched on head
-    ctx.save();
-    ctx.translate(198, 118);
-    ctx.rotate(0.16);
-    ctx.fillStyle = '#f5c53b';
-    ctx.beginPath();
-    ctx.moveTo(-42, 18);
-    ctx.lineTo(-48, -18);
-    ctx.lineTo(-20, 2);
-    ctx.lineTo(0, -24);
-    ctx.lineTo(20, 2);
-    ctx.lineTo(48, -18);
-    ctx.lineTo(42, 18);
-    ctx.closePath();
-    ctx.fill();
-    ctx.stroke();
-    ctx.restore();
-
-    // Bulging googly eyes + gold monocle on right eye
-    for (const [ex, r] of [
-      [156, 18],
-      [228, 24],
-    ]) {
-      ctx.fillStyle = '#ffffff';
-      ctx.beginPath();
-      ctx.arc(ex, 208, r, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.stroke();
-      ctx.fillStyle = '#1e1918';
-      ctx.beginPath();
-      ctx.arc(ex + (ex < 192 ? 4 : -4), 206, 6.5, 0, Math.PI * 2);
-      ctx.fill();
-    }
-    ctx.strokeStyle = '#f5c53b';
-    ctx.lineWidth = 4;
-    ctx.beginPath();
-    ctx.arc(228, 208, 29, 0, Math.PI * 2);
-    ctx.stroke();
-
-    // Bulbous clown-like nose & giant curled handlebar mustache
-    ctx.fillStyle = '#e37b68';
-    ctx.beginPath();
-    ctx.arc(192, 238, 20, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.strokeStyle = '#2b1e1c';
-    ctx.lineWidth = 4;
-    ctx.stroke();
-
-    ctx.fillStyle = '#f0ede9';
-    ctx.beginPath();
-    ctx.moveTo(192, 268);
-    ctx.bezierCurveTo(150, 250, 110, 295, 86, 266);
-    ctx.bezierCurveTo(105, 312, 160, 294, 192, 282);
-    ctx.bezierCurveTo(224, 294, 279, 312, 298, 266);
-    ctx.bezierCurveTo(274, 295, 234, 250, 192, 268);
-    ctx.fill();
-    ctx.stroke();
-
-    // Satirical campaign poster header & bottom slogan
-    ctx.fillStyle = '#1e1918';
-    ctx.fillRect(18, 20, 348, 48);
-    ctx.fillStyle = '#f7ebd4';
-    ctx.font = 'bold 22px serif';
-    ctx.textAlign = 'center';
-    ctx.fillText('VOTE BARON VON BLUSTER', 192, 52);
-
-    ctx.fillStyle = '#c8322b';
-    ctx.fillRect(24, 442, 336, 48);
-    ctx.fillStyle = '#fff6e5';
-    ctx.font = 'bold 20px sans-serif';
-    ctx.fillText('“MANDATORY NAPS & 200% CHEESE!”', 192, 473);
-
-    sofaArtworks.push(track(finalizeTexture(c, maxAniso)));
-  }
-
-  // Artwork 2: Cute Chibi Anime Girl Illustration (Q版二次元少女)
-  {
-    const c = document.createElement('canvas');
-    c.width = 512;
-    c.height = 512;
+    c.width = width;
+    c.height = height;
     const ctx = c.getContext('2d')!;
 
-    // Soft pastel peach-lavender gradient backdrop with polka dots & sparkles
-    const bgGrad = ctx.createLinearGradient(0, 0, 512, 512);
-    bgGrad.addColorStop(0, '#fce4ec');
-    bgGrad.addColorStop(0.5, '#ede7f6');
-    bgGrad.addColorStop(1, '#e1f5fe');
-    ctx.fillStyle = bgGrad;
-    ctx.fillRect(0, 0, 512, 512);
+    // Immediate muted matte parchment placeholder before image decode finishes
+    ctx.fillStyle = opts.baseHex;
+    ctx.fillRect(0, 0, width, height);
 
-    ctx.fillStyle = 'rgba(255, 255, 255, 0.55)';
-    for (let y = 32; y < 512; y += 64) {
-      for (let x = 32; x < 512; x += 64) {
-        ctx.beginPath();
-        ctx.arc(x + ((y / 64) % 2) * 24, y, 8, 0, Math.PI * 2);
-        ctx.fill();
+    const tex = track(finalizeTexture(c, maxAniso));
+    tex.wrapS = THREE.ClampToEdgeWrapping;
+    tex.wrapT = THREE.ClampToEdgeWrapping;
+
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    img.onload = () => {
+      ctx.save();
+      ctx.fillStyle = opts.baseHex;
+      ctx.fillRect(0, 0, width, height);
+
+      // Compute clean aspect-preserving cover or contain rectangle
+      const scale =
+        opts.fitMode === 'cover'
+          ? Math.max(width / img.naturalWidth, height / img.naturalHeight)
+          : Math.min(width / img.naturalWidth, height / img.naturalHeight);
+      const dw = img.naturalWidth * scale;
+      const dh = img.naturalHeight * scale;
+      const dx = (width - dw) * 0.5;
+      const dy = (height - dh) * 0.5;
+
+      // Subtle smoothing for pixel art keeps crispness without harsh digital aliasing
+      ctx.imageSmoothingEnabled = !opts.pixelArt;
+      ctx.imageSmoothingQuality = 'high';
+      ctx.filter = opts.filter;
+      ctx.drawImage(img, dx, dy, dw, dh);
+      ctx.filter = 'none';
+      ctx.restore();
+
+      // 1. Warm wall-harmonizing multiply glaze to knock down bright pure-white highlights
+      ctx.save();
+      ctx.globalCompositeOperation = 'multiply';
+      ctx.fillStyle = opts.multiplyGlaze;
+      ctx.fillRect(0, 0, width, height);
+      ctx.restore();
+
+      // 2. Soft low-opacity warm dusty matte wash so deep blacks lift gently to match room shadows
+      ctx.save();
+      ctx.globalCompositeOperation = 'source-over';
+      ctx.fillStyle = opts.warmWash;
+      ctx.fillRect(0, 0, width, height);
+
+      // 3. Subtle archival matte paper grain (deterministic lightweight pass)
+      let seed = width * 31 + height * 17;
+      const nextRand = () => {
+        seed = (seed * 1664525 + 1013904223) >>> 0;
+        return seed / 4294967296;
+      };
+      for (let i = 0; i < 4200; i++) {
+        const gx = nextRand() * width;
+        const gy = nextRand() * height;
+        const bright = nextRand() > 0.5;
+        ctx.fillStyle = bright
+          ? 'rgba(242, 232, 222, 0.032)'
+          : 'rgba(68, 56, 52, 0.030)';
+        ctx.fillRect(gx, gy, 2.2, 2.2);
       }
-    }
 
-    // Soft circular pastel halo behind Chibi character
-    ctx.fillStyle = '#fff8e7';
-    ctx.beginPath();
-    ctx.arc(256, 260, 178, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.strokeStyle = '#f48fb1';
-    ctx.lineWidth = 6;
-    ctx.setLineDash([14, 10]);
-    ctx.stroke();
-    ctx.setLineDash([]);
+      // 4. Soft inner frame mat shadow vignette so artwork settles behind the frame bevel
+      const vig = ctx.createRadialGradient(
+        width * 0.5,
+        height * 0.5,
+        Math.min(width, height) * 0.34,
+        width * 0.5,
+        height * 0.5,
+        Math.hypot(width, height) * 0.56
+      );
+      vig.addColorStop(0, 'rgba(42, 34, 32, 0)');
+      vig.addColorStop(1, `rgba(42, 34, 32, ${opts.vignetteAlpha.toFixed(3)})`);
+      ctx.fillStyle = vig;
+      ctx.fillRect(0, 0, width, height);
+      ctx.restore();
 
-    // Chibi Twin-tails in sky-blue / periwinkle
-    ctx.fillStyle = '#7ba7e8';
-    ctx.strokeStyle = '#362b4d';
-    ctx.lineWidth = 6;
-    for (const side of [-1, 1]) {
-      ctx.beginPath();
-      ctx.ellipse(256 + side * 138, 255, 42, 92, side * -0.32, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.stroke();
-    }
+      tex.needsUpdate = true;
+    };
+    img.src = url;
+    return tex;
+  };
 
-    // Petite Chibi body (2-head-tall proportion) in sailor/maid pastel dress
-    ctx.fillStyle = '#48639c';
-    ctx.beginPath();
-    ctx.moveTo(192, 336);
-    ctx.lineTo(320, 336);
-    ctx.lineTo(348, 456);
-    ctx.lineTo(164, 456);
-    ctx.closePath();
-    ctx.fill();
-    ctx.stroke();
+  // Artwork 1: Constructivist Geometric Paper-Cut Collage (构成主义拼贴画)
+  sofaArtworks.push(
+    createHarmonizedGalleryPrint(
+      '/assets/aistudio/IMG_20261121_192018_ec76c714.png',
+      768,
+      1024,
+      {
+        baseHex: '#dbd0c5',
+        filter: 'saturate(0.70) brightness(0.84) contrast(0.90)',
+        multiplyGlaze: 'rgba(226, 212, 200, 0.42)',
+        warmWash: 'rgba(232, 219, 208, 0.09)',
+        vignetteAlpha: 0.14,
+        fitMode: 'cover',
+        pixelArt: false,
+      }
+    )
+  );
 
-    // White frilly apron & oversized pink ribbon bow at collar
-    ctx.fillStyle = '#ffffff';
-    ctx.beginPath();
-    ctx.roundRect(210, 344, 92, 102, 18);
-    ctx.fill();
-    ctx.stroke();
-
-    ctx.fillStyle = '#ff6f9c';
-    ctx.beginPath();
-    ctx.ellipse(234, 348, 22, 13, -0.25, 0, Math.PI * 2);
-    ctx.ellipse(278, 348, 22, 13, 0.25, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.stroke();
-    ctx.beginPath();
-    ctx.arc(256, 348, 10, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.stroke();
-
-    // Oversized Round Chibi Head with Puffed Cheeks
-    ctx.fillStyle = '#ffe6dc';
-    ctx.beginPath();
-    ctx.ellipse(256, 238, 112, 98, 0, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.stroke();
-
-    // Cute cat-ear ribbon headband on top of head
-    for (const side of [-1, 1]) {
-      ctx.fillStyle = '#ffffff';
-      ctx.beginPath();
-      ctx.moveTo(256 + side * 42, 145);
-      ctx.lineTo(256 + side * 95, 96);
-      ctx.lineTo(256 + side * 108, 165);
-      ctx.closePath();
-      ctx.fill();
-      ctx.stroke();
-
-      ctx.fillStyle = '#ff94b8';
-      ctx.beginPath();
-      ctx.moveTo(256 + side * 54, 144);
-      ctx.lineTo(256 + side * 88, 112);
-      ctx.lineTo(256 + side * 95, 156);
-      ctx.closePath();
-      ctx.fill();
-    }
-
-    // Fluffy blue anime bangs framing the face + ahoge cowlick curl
-    ctx.fillStyle = '#82b1ff';
-    ctx.beginPath();
-    ctx.arc(256, 218, 114, Math.PI * 1.05, Math.PI * 1.95);
-    ctx.lineTo(350, 228);
-    ctx.quadraticCurveTo(320, 175, 298, 226);
-    ctx.quadraticCurveTo(275, 168, 256, 224);
-    ctx.quadraticCurveTo(235, 168, 214, 226);
-    ctx.quadraticCurveTo(190, 175, 162, 228);
-    ctx.closePath();
-    ctx.fill();
-    ctx.stroke();
-
-    // Expressive Sparkly Chibi Eyes (Left eye winking '>', Right eye huge starry iris!)
-    // Left eye wink
-    ctx.strokeStyle = '#362b4d';
-    ctx.lineWidth = 7;
-    ctx.lineCap = 'round';
-    ctx.beginPath();
-    ctx.moveTo(182, 232);
-    ctx.lineTo(222, 248);
-    ctx.lineTo(184, 264);
-    ctx.stroke();
-
-    // Right eye large sparkling anime iris
-    ctx.fillStyle = '#ffffff';
-    ctx.beginPath();
-    ctx.ellipse(304, 248, 28, 32, 0, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.stroke();
-
-    ctx.fillStyle = '#3b6cde';
-    ctx.beginPath();
-    ctx.ellipse(302, 250, 20, 24, 0, 0, Math.PI * 2);
-    ctx.fill();
-
-    ctx.fillStyle = '#a3d5ff';
-    ctx.beginPath();
-    ctx.ellipse(302, 260, 14, 11, 0, 0, Math.PI * 2);
-    ctx.fill();
-
-    // Star & circle eye highlights
-    ctx.fillStyle = '#ffffff';
-    ctx.beginPath();
-    ctx.arc(293, 238, 7.5, 0, Math.PI * 2);
-    ctx.arc(312, 258, 4.2, 0, Math.PI * 2);
-    ctx.fill();
-
-    // Rosy anime blush ovals with cute slash lines
-    ctx.fillStyle = 'rgba(255, 118, 152, 0.55)';
-    ctx.beginPath();
-    ctx.ellipse(176, 280, 22, 11, 0, 0, Math.PI * 2);
-    ctx.ellipse(334, 280, 22, 11, 0, 0, Math.PI * 2);
-    ctx.fill();
-
-    // Happy ':3' cat-smile mouth
-    ctx.strokeStyle = '#362b4d';
-    ctx.lineWidth = 5.5;
-    ctx.beginPath();
-    ctx.arc(244, 282, 12, 0.15, Math.PI - 0.15);
-    ctx.arc(268, 282, 12, 0.15, Math.PI - 0.15);
-    ctx.stroke();
-
-    // Cute Chibi peace-sign hand raised near cheek
-    ctx.fillStyle = '#ffe6dc';
-    ctx.beginPath();
-    ctx.arc(146, 318, 22, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.stroke();
-
-    // Floating pastel stars
-    ctx.fillStyle = '#ffd54f';
-    for (const [sx, sy, sr] of [
-      [88, 128, 16],
-      [424, 136, 18],
-      [96, 392, 14],
-      [418, 384, 15],
-    ]) {
-      ctx.beginPath();
-      ctx.arc(sx, sy, sr, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.lineWidth = 3.5;
-      ctx.stroke();
-    }
-
-    sofaArtworks.push(track(finalizeTexture(c, maxAniso)));
-  }
+  // Artwork 2: Blue-Haired Pixel Anime Girl Print (蓝头发少女画作)
+  sofaArtworks.push(
+    createHarmonizedGalleryPrint(
+      '/assets/aistudio/IMG_20261121_192001_c418c726.jpg',
+      768,
+      1024,
+      {
+        baseHex: '#cfc6c2',
+        filter: 'saturate(0.68) brightness(0.83) contrast(0.88)',
+        multiplyGlaze: 'rgba(224, 211, 204, 0.36)',
+        warmWash: 'rgba(234, 222, 214, 0.10)',
+        vignetteAlpha: 0.17,
+        fitMode: 'cover',
+        pixelArt: true,
+      }
+    )
+  );
 
   // Artwork 3: Mid-Century Surreal Bauhaus Geometric Eye & Arch Print
   {
@@ -3831,7 +3783,7 @@ export function createProceduralTextures(renderer: THREE.WebGLRenderer): Procedu
     sofaArtworks.push(track(finalizeTexture(c, maxAniso)));
   }
 
-  // 14. Light Warm Nordic Honey-Oak Wooden Door Texture matching the TV Console (#d8ae90) + Wood-Pore Bump Map
+  // 14. Clean Silky Warm Honey-Oak Wooden Door Texture (zero stray vertical stripes — lets 3D recessed panel grooves shine!)
   const doorCanvas = document.createElement('canvas');
   doorCanvas.width = 512;
   doorCanvas.height = 1024;
@@ -3841,120 +3793,81 @@ export function createProceduralTextures(renderer: THREE.WebGLRenderer): Procedu
   doorBumpCanvas.height = 1024;
   const doorBumpCtx = doorBumpCanvas.getContext('2d')!;
 
-  // Clear luminous honey-gold vertical door gradient (top brighter honey -> bottom warm honey)
+  // Smooth warm luminous honey-oak base gradient
   const doorBaseGrad = doorCtx.createLinearGradient(0, 0, 0, 1024);
-  doorBaseGrad.addColorStop(0.0, '#fae0ae');
-  doorBaseGrad.addColorStop(0.45, '#f2ca89');
-  doorBaseGrad.addColorStop(1.0, '#e2b06b');
+  doorBaseGrad.addColorStop(0.0, '#f7dba9');
+  doorBaseGrad.addColorStop(0.48, '#efc687');
+  doorBaseGrad.addColorStop(1.0, '#e1b16d');
   doorCtx.fillStyle = doorBaseGrad;
   doorCtx.fillRect(0, 0, 512, 1024);
-  doorBumpCtx.fillStyle = '#888888';
+  doorBumpCtx.fillStyle = '#848484';
   doorBumpCtx.fillRect(0, 0, 512, 1024);
 
-  // Subtle multi-plank vertical oak board tonal bands (left stile, center panels, right stile)
-  const doorPlankBands: [number, number, string, string][] = [
-    [0, 92, 'rgba(204, 148, 82, 0.10)', '#969696'],
-    [92, 328, 'rgba(255, 240, 206, 0.14)', '#848484'],
-    [420, 92, 'rgba(204, 148, 82, 0.10)', '#969696'],
-  ];
-  for (const [bx, bw, col, bCol] of doorPlankBands) {
-    doorCtx.fillStyle = col;
-    doorCtx.fillRect(bx, 0, bw, 1024);
-    doorBumpCtx.fillStyle = bCol;
-    doorBumpCtx.fillRect(bx, 0, bw, 1024);
-  }
-
-  // Stile-to-panel V-groove joinery lines at x = 92 and x = 420
-  for (const jx of [92, 420]) {
-    const jGrad = doorCtx.createLinearGradient(jx - 8, 0, jx + 8, 0);
-    jGrad.addColorStop(0.0, 'rgba(255, 242, 226, 0.20)');
-    jGrad.addColorStop(0.5, 'rgba(116, 74, 52, 0.34)');
-    jGrad.addColorStop(1.0, 'rgba(255, 242, 226, 0.20)');
-    doorCtx.fillStyle = jGrad;
-    doorCtx.fillRect(jx - 8, 64, 16, 896);
-
-    const jbGrad = doorBumpCtx.createLinearGradient(jx - 6, 0, jx + 6, 0);
-    jbGrad.addColorStop(0.0, '#c8c8c8');
-    jbGrad.addColorStop(0.5, '#282828');
-    jbGrad.addColorStop(1.0, '#c8c8c8');
-    doorBumpCtx.fillStyle = jbGrad;
-    doorBumpCtx.fillRect(jx - 6, 64, 12, 896);
-  }
-
-  // Gentle soft warm-oak perimeter edge shading around the outer door leaf
-  const edgeGradL = doorCtx.createLinearGradient(0, 0, 56, 0);
-  edgeGradL.addColorStop(0, 'rgba(138, 92, 64, 0.22)');
+  // Subtle soft perimeter edge shading around the outer door leaf (no interior vertical stripes!)
+  const edgeGradL = doorCtx.createLinearGradient(0, 0, 44, 0);
+  edgeGradL.addColorStop(0, 'rgba(138, 92, 64, 0.16)');
   edgeGradL.addColorStop(1, 'rgba(138, 92, 64, 0.0)');
   doorCtx.fillStyle = edgeGradL;
-  doorCtx.fillRect(0, 0, 56, 1024);
+  doorCtx.fillRect(0, 0, 44, 1024);
 
-  const edgeGradR = doorCtx.createLinearGradient(512, 0, 456, 0);
-  edgeGradR.addColorStop(0, 'rgba(138, 92, 64, 0.22)');
+  const edgeGradR = doorCtx.createLinearGradient(512, 0, 468, 0);
+  edgeGradR.addColorStop(0, 'rgba(138, 92, 64, 0.16)');
   edgeGradR.addColorStop(1, 'rgba(138, 92, 64, 0.0)');
   doorCtx.fillStyle = edgeGradR;
-  doorCtx.fillRect(456, 0, 56, 1024);
+  doorCtx.fillRect(468, 0, 44, 1024);
 
-  const edgeGradT = doorCtx.createLinearGradient(0, 0, 0, 58);
-  edgeGradT.addColorStop(0, 'rgba(138, 92, 64, 0.18)');
+  const edgeGradT = doorCtx.createLinearGradient(0, 0, 0, 48);
+  edgeGradT.addColorStop(0, 'rgba(138, 92, 64, 0.14)');
   edgeGradT.addColorStop(1, 'rgba(138, 92, 64, 0.0)');
   doorCtx.fillStyle = edgeGradT;
-  doorCtx.fillRect(0, 0, 512, 58);
+  doorCtx.fillRect(0, 0, 512, 48);
 
-  const edgeGradB = doorCtx.createLinearGradient(0, 1024, 0, 956);
-  edgeGradB.addColorStop(0, 'rgba(138, 92, 64, 0.24)');
+  const edgeGradB = doorCtx.createLinearGradient(0, 1024, 0, 964);
+  edgeGradB.addColorStop(0, 'rgba(138, 92, 64, 0.18)');
   edgeGradB.addColorStop(1, 'rgba(138, 92, 64, 0.0)');
   doorCtx.fillStyle = edgeGradB;
-  doorCtx.fillRect(0, 956, 512, 68);
+  doorCtx.fillRect(0, 964, 512, 60);
 
-  // Silky low-contrast cathedral oak grain arches + fine vertical wood pores matching clearcoat furniture oak
-  for (let x = 3; x < 509; x += 4) {
-    const normX = (x - 256) / 256;
-    const isStile = x < 92 || x > 420;
-    const waveFreq = isStile ? 1.5 : 2.5;
-    const isDarkFiber = (x / 4) % 3 === 0;
-    const isMedFiber = (x / 4) % 5 === 0;
-    doorCtx.strokeStyle = isDarkFiber
-      ? 'rgba(152, 108, 78, 0.11)'
-      : isMedFiber
-        ? 'rgba(180, 134, 100, 0.085)'
-        : 'rgba(255, 244, 232, 0.14)';
-    doorCtx.lineWidth = isDarkFiber ? 1.2 : 0.95;
-    doorCtx.beginPath();
-    for (let y = 0; y <= 1024; y += 24) {
-      const arch =
-        Math.sin((y / 1024) * Math.PI * waveFreq + (isStile ? 0.8 : 0.0)) *
-        (1.0 - Math.abs(normX) * 0.65) *
-        7.5;
-      if (y === 0) doorCtx.moveTo(x + arch, y);
-      else doorCtx.lineTo(x + arch, y);
-    }
-    doorCtx.stroke();
+  // Whisper-soft wide organic honey-oak satin wood tone flow (zero rigid vertical lines!)
+  for (let w = 0; w < 14; w++) {
+    const cx = 36 + w * 34;
+    const bandGrad = doorCtx.createLinearGradient(cx - 26, 0, cx + 26, 0);
+    const warmShift = w % 2 === 0;
+    bandGrad.addColorStop(0, 'rgba(255, 240, 214, 0)');
+    bandGrad.addColorStop(
+      0.5,
+      warmShift ? 'rgba(255, 244, 224, 0.055)' : 'rgba(176, 122, 74, 0.042)'
+    );
+    bandGrad.addColorStop(1, 'rgba(255, 240, 214, 0)');
+    doorCtx.fillStyle = bandGrad;
+    doorCtx.fillRect(cx - 26, 0, 52, 1024);
 
-    doorBumpCtx.strokeStyle = isDarkFiber
-      ? 'rgba(84, 84, 84, 0.30)'
-      : 'rgba(176, 176, 176, 0.24)';
-    doorBumpCtx.lineWidth = isDarkFiber ? 1.1 : 0.9;
-    doorBumpCtx.beginPath();
-    for (let y = 0; y <= 1024; y += 24) {
-      const arch =
-        Math.sin((y / 1024) * Math.PI * waveFreq + (isStile ? 0.8 : 0.0)) *
-        (1.0 - Math.abs(normX) * 0.65) *
-        7.5;
-      if (y === 0) doorBumpCtx.moveTo(x + arch, y);
-      else doorBumpCtx.lineTo(x + arch, y);
-    }
-    doorBumpCtx.stroke();
+    // Matching ultra-gentle smooth wood figure in bump map
+    const bGrad = doorBumpCtx.createLinearGradient(cx - 22, 0, cx + 22, 0);
+    bGrad.addColorStop(0, 'rgba(132, 132, 132, 0)');
+    bGrad.addColorStop(0.5, warmShift ? 'rgba(154, 154, 154, 0.18)' : 'rgba(110, 110, 110, 0.18)');
+    bGrad.addColorStop(1, 'rgba(132, 132, 132, 0)');
+    doorBumpCtx.fillStyle = bGrad;
+    doorBumpCtx.fillRect(cx - 22, 0, 44, 1024);
   }
 
-  // Fine silky wood pore flecks (gentle contrast under semi-matte clearcoat)
-  for (let p = 0; p < 200; p++) {
-    const px = ((p * 173 + 29) % 496) + 8;
-    const py = ((p * 389 + 67) % 996) + 14;
-    const plen = 8 + (p % 12);
-    doorCtx.fillStyle = p % 2 === 0 ? 'rgba(146, 102, 74, 0.10)' : 'rgba(255, 240, 224, 0.12)';
-    doorCtx.fillRect(px, py, 1.3, plen);
-    doorBumpCtx.fillStyle = p % 2 === 0 ? '#686868' : '#a8a8a8';
-    doorBumpCtx.fillRect(px, py, 1.3, plen);
+  // Delicate curved cathedral grain halos (ultra-low contrast, organic & warm)
+  for (let a = 0; a < 9; a++) {
+    const gx = 72 + ((a * 113) % 368);
+    const gy = 140 + ((a * 197) % 740);
+    const grx = 34 + (a % 3) * 18;
+    const gry = 150 + (a % 4) * 55;
+    doorCtx.strokeStyle = a % 2 === 0 ? 'rgba(164, 112, 68, 0.045)' : 'rgba(255, 244, 224, 0.06)';
+    doorCtx.lineWidth = 3.2;
+    doorCtx.beginPath();
+    doorCtx.ellipse(gx, gy, grx, gry, 0, 0, Math.PI * 2);
+    doorCtx.stroke();
+
+    doorBumpCtx.strokeStyle = 'rgba(118, 118, 118, 0.14)';
+    doorBumpCtx.lineWidth = 2.6;
+    doorBumpCtx.beginPath();
+    doorBumpCtx.ellipse(gx, gy, grx, gry, 0, 0, Math.PI * 2);
+    doorBumpCtx.stroke();
   }
 
   const woodDoor = track(finalizeTexture(doorCanvas, maxAniso, 1, 1));
@@ -4989,319 +4902,1002 @@ export function createProceduralTextures(renderer: THREE.WebGLRenderer): Procedu
   }
   const brushedSteel = track(finalizeTexture(steelCanvas, maxAniso, 2, 2));
 
-  // 22. Matte Cloth & Paper Book Cover Atlas (4x2 = 8 Distinct Book Covers & Spines with Typography & Geometric Art)
-  //     Eliminates any plastic look on books by providing linen-cloth/matte-paper grain, embossed cover borders,
-  //     printed titles/subtitles, spine volume labels, and Bauhaus/modernist geometric cover illustrations!
+  // 22. Light-Toned Diverse Book, Manga & Retro Game Box Atlas (1024x1024, 4x4 = 16 Distinct Designs)
+  //     Row 0 (0-3): Consecutive Manga Volumes (漫画书) — crisp white/cream jackets with pastel accents & bold vol badges
+  //     Row 1 (4-7): Literary Fiction (文学书) — airy linen-ivory, powder-blue, blush-sand, warm oat with obi belly bands
+  //     Row 2 (8-11): Philosophy & Essays (哲学书) — understated alabaster, pale stone, parchment, misty slate serif editions
+  //     Row 3 (12-13): Technical / Design Manuals (专业书) — clean studio-white & pearl-silver Swiss grid / diagram covers
+  //     Row 3 (14-15): Retro Game Cases (复古游戏盒) — pearlescent grey & pastel 90s console/handheld game box art
   const bkCanvas = document.createElement('canvas');
   bkCanvas.width = 1024;
-  bkCanvas.height = 512;
+  bkCanvas.height = 1024;
   const bk = bkCanvas.getContext('2d')!;
   const bkBumpCanvas = document.createElement('canvas');
   bkBumpCanvas.width = 1024;
-  bkBumpCanvas.height = 512;
+  bkBumpCanvas.height = 1024;
   const bkb = bkBumpCanvas.getContext('2d')!;
 
-  bkb.fillStyle = '#808080';
-  bkb.fillRect(0, 0, 1024, 512);
+  bkb.fillStyle = '#828282';
+  bkb.fillRect(0, 0, 1024, 1024);
 
-  const bookSpecs: {
+  type BookCategory = 'manga' | 'literature' | 'philosophy' | 'technical' | 'game';
+  interface BookAtlasSpec {
+    cat: BookCategory;
     bg: string;
     spineBg: string;
     accent1: string;
     accent2: string;
     ink: string;
     title: string;
+    spineTitle: string;
     subtitle: string;
     vol: string;
-    motif: 'arch' | 'circles' | 'bauhaus' | 'botanical' | 'grid' | 'crescent' | 'prism' | 'frames';
-  }[] = [
+    obiColor?: string;
+    motif:
+      | 'manga_burst'
+      | 'manga_mint'
+      | 'manga_peach'
+      | 'manga_cat'
+      | 'lit_leaf'
+      | 'lit_window'
+      | 'lit_zoo'
+      | 'lit_bird'
+      | 'phil_frame'
+      | 'phil_rings'
+      | 'phil_diamond'
+      | 'phil_grid'
+      | 'tech_optics'
+      | 'tech_wave'
+      | 'game_sfc'
+      | 'game_handheld';
+  }
+
+  const bookSpecs: BookAtlasSpec[] = [
+    // Row 0: Manga Series (0-3) — soft pastel tinted spines so zero books look blank white
     {
-      bg: '#f2e8da',
-      spineBg: '#d8c7b2',
-      accent1: '#c96f53',
-      accent2: '#4d6a82',
-      ink: '#2d2624',
-      title: 'KINFOLK',
-      subtitle: 'INTERIOR & STILLNESS',
+      cat: 'manga',
+      bg: '#f7fafd',
+      spineBg: '#dfeef9',
+      accent1: '#5da6dc',
+      accent2: '#ef8677',
+      ink: '#2a3748',
+      title: '星塵電車',
+      spineTitle: '星塵電車',
+      subtitle: 'STARDUST TRAM · VOL.1',
       vol: '01',
-      motif: 'arch',
+      motif: 'manga_burst',
     },
     {
-      bg: '#4d6b88',
-      spineBg: '#3c5670',
-      accent1: '#f0dfca',
-      accent2: '#d9985b',
-      ink: '#f7efe4',
-      title: 'NORDIC FORM',
-      subtitle: 'ARCHITECTURAL ESSAYS',
+      cat: 'manga',
+      bg: '#f4fbf7',
+      spineBg: '#daf1e5',
+      accent1: '#59b996',
+      accent2: '#f0ac5e',
+      ink: '#283b35',
+      title: '星塵電車',
+      spineTitle: '星塵電車',
+      subtitle: 'STARDUST TRAM · VOL.2',
       vol: '02',
-      motif: 'circles',
+      motif: 'manga_mint',
     },
     {
-      bg: '#c96b59',
-      spineBg: '#a85444',
-      accent1: '#f4e8d8',
-      accent2: '#384654',
-      ink: '#faefe2',
-      title: 'BAUHAUS',
-      subtitle: 'WEIMAR DESSAU 1923',
+      cat: 'manga',
+      bg: '#fdf7f0',
+      spineBg: '#fae5d2',
+      accent1: '#ea9362',
+      accent2: '#719ed4',
+      ink: '#3a2d27',
+      title: '星塵電車',
+      spineTitle: '星塵電車',
+      subtitle: 'STARDUST TRAM · VOL.3',
       vol: '03',
-      motif: 'bauhaus',
+      motif: 'manga_peach',
     },
     {
-      bg: '#5f826a',
-      spineBg: '#4c6b56',
-      accent1: '#f3eadb',
-      accent2: '#d8a668',
-      ink: '#f6efe4',
-      title: 'BOTANICA',
-      subtitle: 'HERBARIUM ATLAS',
+      cat: 'manga',
+      bg: '#fbf3f9',
+      spineBg: '#efe0f2',
+      accent1: '#be89cc',
+      accent2: '#efbc74',
+      ink: '#392a40',
+      title: '猫与黄昏',
+      spineTitle: '猫与黄昏',
+      subtitle: 'NEKO TO TASOGARE · 4',
       vol: '04',
-      motif: 'botanical',
+      motif: 'manga_cat',
+    },
+
+    // Row 1: Literary Fiction (4-7)
+    {
+      cat: 'literature',
+      bg: '#f5efe3',
+      spineBg: '#ebe2d1',
+      accent1: '#86ab8c',
+      accent2: '#d99e75',
+      ink: '#3b352f',
+      title: '海边慢信',
+      spineTitle: '海边慢信',
+      subtitle: 'LETTERS BY THE TIDE',
+      vol: 'Ⅰ',
+      obiColor: '#f6df98',
+      motif: 'lit_leaf',
     },
     {
-      bg: '#dec07a',
-      spineBg: '#c4a55e',
-      accent1: '#354352',
-      accent2: '#c85a48',
-      ink: '#2b2522',
-      title: 'MODULAR',
-      subtitle: 'GRID TYPOGRAPHY',
-      vol: '05',
-      motif: 'grid',
+      cat: 'literature',
+      bg: '#dce9f2',
+      spineBg: '#cddde9',
+      accent1: '#fbf8f2',
+      accent2: '#d6a468',
+      ink: '#2d3f52',
+      title: '九月玻璃窗',
+      spineTitle: '九月玻璃窗',
+      subtitle: 'SEPTEMBER GLASS',
+      vol: 'Ⅱ',
+      obiColor: '#f5efe6',
+      motif: 'lit_window',
     },
     {
-      bg: '#86698c',
-      spineBg: '#6d5373',
-      accent1: '#f5ebd9',
-      accent2: '#e09b78',
-      ink: '#f8f0e6',
-      title: 'SOLITUDE',
-      subtitle: 'POETICS OF SPACE',
-      vol: '06',
-      motif: 'crescent',
+      cat: 'literature',
+      bg: '#f4e1da',
+      spineBg: '#ead2c8',
+      accent1: '#c26f68',
+      accent2: '#7d9288',
+      ink: '#42302d',
+      title: '失眠动物园',
+      spineTitle: '失眠动物园',
+      subtitle: 'NOCTURNE ZOO',
+      vol: 'Ⅲ',
+      obiColor: '#fbf7ee',
+      motif: 'lit_zoo',
     },
     {
-      bg: '#d98a7c',
-      spineBg: '#bf7265',
-      accent1: '#f7efe4',
-      accent2: '#465c6e',
-      ink: '#2d2424',
-      title: 'MISIDE ART',
-      subtitle: 'CONCEPT ARCHIVE',
-      vol: '07',
-      motif: 'prism',
+      cat: 'literature',
+      bg: '#f2ead8',
+      spineBg: '#e8dcc6',
+      accent1: '#d88966',
+      accent2: '#6e8ea3',
+      ink: '#3a342c',
+      title: '白昼候鸟',
+      spineTitle: '白昼候鸟',
+      subtitle: 'DAYLIGHT MIGRATION',
+      vol: 'Ⅳ',
+      obiColor: '#c7decb',
+      motif: 'lit_bird',
+    },
+
+    // Row 2: Philosophy & Essays (8-11)
+    {
+      cat: 'philosophy',
+      bg: '#f2f1ec',
+      spineBg: '#e7e5dd',
+      accent1: '#7e938a',
+      accent2: '#bfa486',
+      ink: '#2d3130',
+      title: '存在与回声',
+      spineTitle: '存在与回声',
+      subtitle: 'BEING & RESONANCE',
+      vol: 'II',
+      motif: 'phil_frame',
     },
     {
-      bg: '#738b96',
-      spineBg: '#5b727d',
-      accent1: '#f4ece0',
-      accent2: '#cf7a5f',
-      ink: '#f7f1e8',
-      title: 'ATELIER',
-      subtitle: 'WOOD & CERAMICS',
-      vol: '08',
-      motif: 'frames',
+      cat: 'philosophy',
+      bg: '#e5e3de',
+      spineBg: '#dad7d0',
+      accent1: '#697485',
+      accent2: '#c9a67a',
+      ink: '#2d3036',
+      title: '时间之褶',
+      spineTitle: '时间之褶',
+      subtitle: 'THE FOLD OF TIME',
+      vol: 'IV',
+      motif: 'phil_rings',
+    },
+    {
+      cat: 'philosophy',
+      bg: '#efe7d6',
+      spineBg: '#e5dac3',
+      accent1: '#8f8762',
+      accent2: '#b87f64',
+      ink: '#363229',
+      title: '漫步沉思录',
+      spineTitle: '漫步沉思录',
+      subtitle: 'REVERIES OF A WALKER',
+      vol: 'I',
+      motif: 'phil_diamond',
+    },
+    {
+      cat: 'philosophy',
+      bg: '#dde4ea',
+      spineBg: '#cfd8e0',
+      accent1: '#5d738a',
+      accent2: '#c79a7e',
+      ink: '#2a3440',
+      title: '语言边界论',
+      spineTitle: '语言边界论',
+      subtitle: 'LIMITS OF LANGUAGE',
+      vol: 'III',
+      motif: 'phil_grid',
+    },
+
+    // Row 3: Technical / Design Books (12-13) & Retro Game Cases (14-15)
+    {
+      cat: 'technical',
+      bg: '#f8f9fb',
+      spineBg: '#edf0f4',
+      accent1: '#df7861',
+      accent2: '#5596a6',
+      ink: '#232a34',
+      title: 'OPTICS',
+      spineTitle: 'OPTICS & LIGHT',
+      subtitle: 'ARCHITECTURAL LIGHTING',
+      vol: '3E',
+      motif: 'tech_optics',
+    },
+    {
+      cat: 'technical',
+      bg: '#eaedf2',
+      spineBg: '#dde2ea',
+      accent1: '#4d7ea8',
+      accent2: '#d9a45b',
+      ink: '#222b36',
+      title: 'SYNTH 98',
+      spineTitle: 'ACOUSTIC SYNTH',
+      subtitle: 'FM & ANALOG ACOUSTICS',
+      vol: '09',
+      motif: 'tech_wave',
+    },
+    {
+      cat: 'game',
+      bg: '#e5e8ec',
+      spineBg: '#d8dce3',
+      accent1: '#e0635a',
+      accent2: '#5a8fd9',
+      ink: '#252b36',
+      title: 'CHRONO DRIFT',
+      spineTitle: 'CHRONO DRIFT',
+      subtitle: 'SUPER 32-BIT EDITION',
+      vol: '97',
+      motif: 'game_sfc',
+    },
+    {
+      cat: 'game',
+      bg: '#f8efc8',
+      spineBg: '#f0e3af',
+      accent1: '#5eb89b',
+      accent2: '#e87e5c',
+      ink: '#2b3330',
+      title: 'PIXEL SKY',
+      spineTitle: 'PIXEL ODYSSEY',
+      subtitle: 'POCKET CART COLLECTION',
+      vol: '99',
+      motif: 'game_handheld',
     },
   ];
 
-  for (let i = 0; i < 8; i++) {
+  for (let i = 0; i < 16; i++) {
     const col = i % 4;
     const row = Math.floor(i / 4);
     const tx = col * 256;
     const ty = row * 256;
     const spec = bookSpecs[i];
 
-    // 1. Spine Zone [tx .. tx + 56]
+    // 1. Spine Zone [tx .. tx + 56] with delicate paper-wrap cylindrical shading
     bk.fillStyle = spec.spineBg;
     bk.fillRect(tx, ty, 58, 256);
+    const spGrad = bk.createLinearGradient(tx, ty, tx + 56, ty);
+    spGrad.addColorStop(0, 'rgba(52, 42, 36, 0.14)');
+    spGrad.addColorStop(0.18, 'rgba(255, 255, 255, 0.08)');
+    spGrad.addColorStop(0.5, 'rgba(255, 255, 255, 0.12)');
+    spGrad.addColorStop(0.82, 'rgba(255, 255, 255, 0.05)');
+    spGrad.addColorStop(1, 'rgba(52, 42, 36, 0.14)');
+    bk.fillStyle = spGrad;
+    bk.fillRect(tx, ty, 56, 256);
     // 2. Cover Zone [tx + 58 .. tx + 222]
     bk.fillStyle = spec.bg;
     bk.fillRect(tx + 58, ty, 166, 256);
-    // 3. Creamy Milled Paper Page Block Strip [tx + 224 .. tx + 256]
-    bk.fillStyle = '#f5ecd9';
+    // 3. Soft Creamy Milled Paper Page Block Strip [tx + 224 .. tx + 256]
+    bk.fillStyle = '#faf3e4';
     bk.fillRect(tx + 224, ty, 32, 256);
-    for (let px = tx + 226; px < tx + 255; px += 3) {
-      bk.fillStyle = (px % 6 === 0) ? 'rgba(168, 146, 118, 0.36)' : 'rgba(255, 252, 244, 0.55)';
-      bk.fillRect(px, ty, 1.5, 256);
-      bkb.fillStyle = (px % 6 === 0) ? '#5a5a5a' : '#a8a8a8';
-      bkb.fillRect(px, ty, 1.5, 256);
+    for (let px = tx + 225; px < tx + 255; px += 2) {
+      const darkLine = (px - tx) % 4 === 0;
+      bk.fillStyle = darkLine ? 'rgba(182, 164, 138, 0.34)' : 'rgba(255, 253, 248, 0.65)';
+      bk.fillRect(px, ty, 1, 256);
+      bkb.fillStyle = darkLine ? '#636363' : '#a2a2a2';
+      bkb.fillRect(px, ty, 1, 256);
     }
 
-    // Hinge crease groove between spine and front cover (gives real hardcover book binding depth)
-    bk.fillStyle = 'rgba(32, 24, 22, 0.28)';
-    bk.fillRect(tx + 56, ty, 4, 256);
-    bkb.fillStyle = '#383838';
-    bkb.fillRect(tx + 55, ty, 5, 256);
+    // French hinge crease groove between spine and front cover
+    bk.fillStyle = 'rgba(48, 38, 34, 0.16)';
+    bk.fillRect(tx + 55, ty, 3, 256);
+    bkb.fillStyle = '#404040';
+    bkb.fillRect(tx + 54, ty, 4, 256);
 
-    // Spine horizontal decorative bands, volume number badge & vertical spine title
-    bk.fillStyle = spec.accent1;
-    bk.fillRect(tx + 6, ty + 18, 44, 5);
-    bk.fillRect(tx + 6, ty + 28, 44, 2);
-    bk.fillRect(tx + 6, ty + 216, 44, 5);
-    // Spine volume circle / square emblem
-    bk.fillStyle = spec.accent1;
-    bk.beginPath();
-    bk.arc(tx + 28, ty + 192, 12, 0, Math.PI * 2);
-    bk.fill();
-    bk.fillStyle = spec.spineBg;
-    bk.font = 'bold 11px monospace';
-    bk.textAlign = 'center';
-    bk.fillText(spec.vol, tx + 28, ty + 196);
-
-    // Vertical spine title text
-    bk.save();
-    bk.translate(tx + 32, ty + 112);
-    bk.rotate(-Math.PI / 2);
-    bk.fillStyle = spec.ink;
-    bk.font = 'bold 13px "Plus Jakarta Sans", sans-serif';
-    bk.textAlign = 'center';
-    bk.fillText(spec.title, 0, 0);
-    bk.restore();
-
-    // Front Cover Embossed Frame Border
-    const cx0 = tx + 68;
-    const cy0 = ty + 14;
-    const cw = 146;
-    const ch = 228;
-    bk.strokeStyle = spec.accent1;
-    bk.lineWidth = 2.5;
-    bk.strokeRect(cx0, cy0, cw, ch);
-    bkb.strokeStyle = '#484848';
-    bkb.lineWidth = 3.0;
-    bkb.strokeRect(cx0, cy0, cw, ch);
-
-    // Front Cover Printed Title & Subtitle Header Block
-    bk.fillStyle = spec.ink;
-    bk.textAlign = 'center';
-    bk.font = 'bold 18px "Plus Jakarta Sans", serif';
-    bk.fillText(spec.title, cx0 + cw * 0.5, cy0 + 34);
-    bk.font = '9px monospace';
-    bk.fillText(spec.subtitle, cx0 + cw * 0.5, cy0 + 50);
-
-    // Thin horizontal rule under title
-    bk.fillStyle = spec.accent1;
-    bk.fillRect(cx0 + 18, cy0 + 58, cw - 36, 2);
-
-    // Geometric Cover Illustration Centerpiece (cxCenter, cyCenter)
+    const cx0 = tx + 66;
+    const cy0 = ty + 12;
+    const cw = 150;
+    const ch = 232;
     const gx = cx0 + cw * 0.5;
     const gy = cy0 + 132;
-    if (spec.motif === 'arch') {
+
+    // ---- CATEGORY-DISTINCT SPINE DESIGNS (Zero uniform archive box template!) ----
+    if (spec.cat === 'manga') {
+      // Manga spine: bright pastel top header band + bold volume square + vertical title + tiny publisher icon
+      bk.fillStyle = spec.accent1;
+      bk.fillRect(tx + 2, ty + 6, 52, 34);
+      bk.fillStyle = '#ffffff';
+      bk.font = 'bold 14px "Plus Jakarta Sans", sans-serif';
+      bk.textAlign = 'center';
+      bk.fillText(spec.vol, tx + 28, ty + 28);
+
+      // Small accent color bar at bottom
+      bk.fillStyle = spec.accent2;
+      bk.fillRect(tx + 6, ty + 216, 44, 18);
+      bk.fillStyle = '#ffffff';
+      bk.font = 'bold 9px monospace';
+      bk.fillText('COMICS', tx + 28, ty + 229);
+
+      // Vertical manga title characters
+      bk.fillStyle = spec.ink;
+      bk.font = 'bold 16px "Noto Sans SC", "Plus Jakarta Sans", sans-serif';
+      bk.textAlign = 'center';
+      const chars = [...spec.spineTitle];
+      chars.forEach((chStr, ci) => {
+        bk.fillText(chStr, tx + 28, ty + 78 + ci * 26);
+      });
+    } else if (spec.cat === 'literature') {
+      // Literature spine: airy minimal serif title + soft pastel obi belly-band wrapped across bottom!
+      if (spec.obiColor) {
+        bk.fillStyle = spec.obiColor;
+        bk.fillRect(tx, ty + 180, 224, 52);
+        bk.fillStyle = 'rgba(40, 32, 26, 0.14)';
+        bk.fillRect(tx, ty + 180, 224, 1.5);
+      }
+      bk.fillStyle = spec.accent1;
+      bk.fillRect(tx + 18, ty + 18, 20, 3);
+      bk.fillStyle = spec.ink;
+      bk.font = '600 14px Georgia, "Noto Serif SC", serif';
+      bk.textAlign = 'center';
+      const chars = [...spec.spineTitle];
+      chars.forEach((chStr, ci) => {
+        bk.fillText(chStr, tx + 28, ty + 56 + ci * 22);
+      });
+      bk.fillStyle = spec.ink;
+      bk.font = '10px Georgia, serif';
+      bk.fillText(spec.vol, tx + 28, ty + 212);
+    } else if (spec.cat === 'philosophy') {
+      // Philosophy spine: understated classical double-hairline bands & refined Roman numeral
+      bk.fillStyle = spec.accent1;
+      bk.fillRect(tx + 8, ty + 20, 40, 1.5);
+      bk.fillRect(tx + 8, ty + 25, 40, 1.5);
+      bk.fillRect(tx + 8, ty + 224, 40, 1.5);
+      bk.fillStyle = spec.accent1;
+      bk.fillRect(tx + 10, ty + 42, 36, 118);
+      bk.fillStyle = '#faf8f2';
+      bk.font = '600 13px Georgia, "Noto Serif SC", serif';
+      bk.textAlign = 'center';
+      const chars = [...spec.spineTitle];
+      chars.forEach((chStr, ci) => {
+        bk.fillText(chStr, tx + 28, ty + 64 + ci * 20);
+      });
+      bk.fillStyle = spec.ink;
+      bk.font = 'italic 12px Georgia, serif';
+      bk.fillText(spec.vol, tx + 28, ty + 204);
+    } else if (spec.cat === 'technical') {
+      // Technical / Design spine: crisp Swiss grid stripe + rotated clean sans-serif title
+      bk.fillStyle = spec.accent1;
+      bk.fillRect(tx + 4, ty + 12, 48, 24);
+      bk.fillStyle = '#ffffff';
+      bk.font = 'bold 11px monospace';
+      bk.textAlign = 'center';
+      bk.fillText(spec.vol, tx + 28, ty + 28);
+
+      bk.save();
+      bk.translate(tx + 32, ty + 132);
+      bk.rotate(-Math.PI / 2);
+      bk.fillStyle = spec.ink;
+      bk.font = 'bold 12px "Plus Jakarta Sans", sans-serif';
+      bk.textAlign = 'center';
+      bk.fillText(spec.spineTitle, 0, 0);
+      bk.restore();
+
+      bk.fillStyle = spec.accent2;
+      bk.fillRect(tx + 4, ty + 226, 48, 12);
+    } else {
+      // Retro Game Box spine: iconic console color header bar + horizontal cartridge badge + system mark
+      bk.fillStyle = spec.accent1;
+      bk.fillRect(tx + 2, ty + 6, 52, 44);
+      bk.fillStyle = '#ffffff';
+      bk.font = 'bold 9px monospace';
+      bk.textAlign = 'center';
+      bk.fillText('RETRO', tx + 28, ty + 24);
+      bk.fillText('32-BIT', tx + 28, ty + 38);
+
+      bk.save();
+      bk.translate(tx + 32, ty + 142);
+      bk.rotate(-Math.PI / 2);
+      bk.fillStyle = spec.ink;
+      bk.font = 'bold 13px monospace';
+      bk.textAlign = 'center';
+      bk.fillText(spec.spineTitle, 0, 0);
+      bk.restore();
+
+      bk.fillStyle = spec.accent2;
+      bk.fillRect(tx + 8, ty + 216, 40, 22);
+      bk.fillStyle = '#ffffff';
+      bk.font = 'bold 10px monospace';
+      bk.fillText(`'${spec.vol}`, tx + 28, ty + 231);
+    }
+
+    // ---- CATEGORY-DISTINCT COVER LAYOUTS & ILLUSTRATIONS ----
+    if (spec.cat === 'manga') {
+      // Diagonal pastel color block + halftone dots + bold manga cover lettering
+      bk.save();
+      bk.beginPath();
+      bk.rect(cx0, cy0, cw, ch);
+      bk.clip();
       bk.fillStyle = spec.accent1;
       bk.beginPath();
-      bk.arc(gx, gy + 12, 34, Math.PI, 0);
-      bk.lineTo(gx + 34, gy + 48);
-      bk.lineTo(gx - 34, gy + 48);
+      bk.moveTo(cx0, cy0 + 82);
+      bk.lineTo(cx0 + cw, cy0 + 48);
+      bk.lineTo(cx0 + cw, cy0 + 186);
+      bk.lineTo(cx0, cy0 + 212);
       bk.closePath();
       bk.fill();
-      bk.fillStyle = spec.accent2;
-      bk.beginPath();
-      bk.arc(gx + 14, gy - 14, 16, 0, Math.PI * 2);
-      bk.fill();
-    } else if (spec.motif === 'circles') {
-      bk.fillStyle = spec.accent1;
-      bk.beginPath();
-      bk.arc(gx - 12, gy, 28, 0, Math.PI * 2);
-      bk.fill();
-      bk.fillStyle = spec.accent2;
-      bk.beginPath();
-      bk.arc(gx + 16, gy + 12, 22, 0, Math.PI * 2);
-      bk.fill();
-      bk.strokeStyle = spec.ink;
-      bk.lineWidth = 2;
-      bk.beginPath();
-      bk.arc(gx, gy - 6, 36, 0, Math.PI * 2);
-      bk.stroke();
-    } else if (spec.motif === 'bauhaus') {
-      bk.fillStyle = spec.accent1;
-      bk.fillRect(gx - 36, gy - 32, 44, 64);
-      bk.fillStyle = spec.accent2;
-      bk.beginPath();
-      bk.moveTo(gx - 10, gy + 34);
-      bk.lineTo(gx + 38, gy + 34);
-      bk.lineTo(gx + 14, gy - 28);
-      bk.closePath();
-      bk.fill();
-    } else if (spec.motif === 'botanical') {
-      bk.fillStyle = spec.accent1;
-      bk.fillRect(gx - 34, gy - 36, 68, 72);
-      bk.strokeStyle = spec.bg;
-      bk.lineWidth = 2.5;
-      bk.beginPath();
-      bk.moveTo(gx, gy + 28);
-      bk.lineTo(gx, gy - 24);
-      bk.stroke();
-      for (const ly of [-14, 0, 14]) {
-        for (const side of [-1, 1]) {
-          bk.fillStyle = spec.bg;
+
+      // Comic halftone dot pattern
+      bk.fillStyle = 'rgba(255, 255, 255, 0.32)';
+      for (let hx = cx0 + 10; hx < cx0 + cw; hx += 12) {
+        for (let hy = cy0 + 62; hy < cy0 + 195; hy += 12) {
           bk.beginPath();
-          bk.ellipse(gx + side * 12, gy + ly, 10, 4.5, side * 0.45, 0, Math.PI * 2);
+          bk.arc(hx, hy, 2.5, 0, Math.PI * 2);
           bk.fill();
         }
       }
-    } else if (spec.motif === 'grid') {
-      bk.strokeStyle = spec.accent1;
-      bk.lineWidth = 2;
-      for (let r = -2; r <= 2; r++) {
-        bk.strokeRect(gx - 32 + (r + 2) * 12, gy - 30, 12, 60);
-      }
-      bk.fillStyle = spec.accent2;
-      bk.fillRect(gx - 20, gy - 18, 40, 36);
-    } else if (spec.motif === 'crescent') {
-      bk.fillStyle = spec.accent1;
-      bk.beginPath();
-      bk.arc(gx, gy, 34, 0, Math.PI * 2);
-      bk.fill();
-      bk.fillStyle = spec.bg;
-      bk.beginPath();
-      bk.arc(gx + 12, gy - 6, 26, 0, Math.PI * 2);
-      bk.fill();
-      bk.fillStyle = spec.accent2;
-      bk.beginPath();
-      bk.arc(gx + 14, gy - 4, 10, 0, Math.PI * 2);
-      bk.fill();
-    } else if (spec.motif === 'prism') {
-      bk.fillStyle = spec.accent1;
-      bk.beginPath();
-      bk.moveTo(gx, gy - 36);
-      bk.lineTo(gx + 38, gy + 30);
-      bk.lineTo(gx - 38, gy + 30);
-      bk.closePath();
-      bk.fill();
-      bk.fillStyle = spec.accent2;
-      bk.beginPath();
-      bk.arc(gx, gy + 8, 15, 0, Math.PI * 2);
-      bk.fill();
-    } else {
-      bk.strokeStyle = spec.accent1;
-      bk.lineWidth = 3;
-      bk.strokeRect(gx - 32, gy - 32, 46, 46);
-      bk.strokeStyle = spec.accent2;
-      bk.strokeRect(gx - 14, gy - 14, 46, 46);
-      bk.fillStyle = spec.accent1;
-      bk.fillRect(gx - 6, gy - 6, 16, 16);
-    }
 
-    // Bottom Publisher / Edition Footer Line
-    bk.fillStyle = spec.ink;
-    bk.font = 'bold 9px monospace';
-    bk.fillText(`EDITION № ${spec.vol} · ARCHIVE PRESS`, cx0 + cw * 0.5, cy0 + ch - 12);
+      // Stylized manga central icon
+      bk.fillStyle = spec.accent2;
+      if (spec.motif === 'manga_cat') {
+        bk.beginPath();
+        bk.arc(gx, gy + 4, 30, 0, Math.PI * 2);
+        bk.fill();
+        bk.beginPath();
+        bk.moveTo(gx - 24, gy - 12);
+        bk.lineTo(gx - 16, gy - 36);
+        bk.lineTo(gx - 4, gy - 20);
+        bk.moveTo(gx + 24, gy - 12);
+        bk.lineTo(gx + 16, gy - 36);
+        bk.lineTo(gx + 4, gy - 20);
+        bk.fill();
+      } else {
+        bk.beginPath();
+        bk.arc(gx + 10, gy - 2, 32, 0, Math.PI * 2);
+        bk.fill();
+        bk.fillStyle = '#ffffff';
+        bk.fillRect(gx - 44, gy + 12, 88, 22);
+        bk.fillStyle = spec.ink;
+        bk.fillRect(gx - 34, gy + 18, 16, 10);
+        bk.fillRect(gx - 10, gy + 18, 16, 10);
+        bk.fillRect(gx + 14, gy + 18, 16, 10);
+      }
+      bk.restore();
+
+      bk.fillStyle = spec.ink;
+      bk.textAlign = 'left';
+      bk.font = 'bold 21px "Noto Sans SC", sans-serif';
+      bk.fillText(spec.title, cx0 + 8, cy0 + 30);
+      bk.font = 'bold 9px monospace';
+      bk.fillText(spec.subtitle, cx0 + 8, cy0 + 46);
+
+      // Volume badge circle bottom-right
+      bk.fillStyle = '#ffffff';
+      bk.beginPath();
+      bk.arc(cx0 + cw - 22, cy0 + ch - 22, 16, 0, Math.PI * 2);
+      bk.fill();
+      bk.strokeStyle = spec.ink;
+      bk.lineWidth = 2;
+      bk.stroke();
+      bk.fillStyle = spec.ink;
+      bk.textAlign = 'center';
+      bk.font = 'bold 13px monospace';
+      bk.fillText(spec.vol, cx0 + cw - 22, cy0 + ch - 18);
+    } else if (spec.cat === 'literature') {
+      // Airy editorial cover with illustration + obi band text
+      bk.fillStyle = spec.ink;
+      bk.textAlign = 'center';
+      bk.font = '600 18px Georgia, "Noto Serif SC", serif';
+      bk.fillText(spec.title, gx, cy0 + 34);
+      bk.font = '8.5px monospace';
+      bk.fillStyle = 'rgba(55, 48, 42, 0.72)';
+      bk.fillText(spec.subtitle, gx, cy0 + 50);
+
+      if (spec.motif === 'lit_leaf') {
+        bk.fillStyle = spec.accent1;
+        for (const [ox, oy, ang] of [
+          [-16, 108, -0.5],
+          [16, 102, 0.5],
+          [-12, 132, -0.4],
+          [14, 128, 0.45],
+        ] as const) {
+          bk.beginPath();
+          bk.ellipse(gx + ox, cy0 + oy, 16, 7, ang, 0, Math.PI * 2);
+          bk.fill();
+        }
+        bk.strokeStyle = spec.ink;
+        bk.lineWidth = 1.6;
+        bk.beginPath();
+        bk.moveTo(gx, cy0 + 82);
+        bk.lineTo(gx, cy0 + 154);
+        bk.stroke();
+      } else if (spec.motif === 'lit_window') {
+        bk.fillStyle = spec.accent1;
+        bk.fillRect(gx - 34, cy0 + 74, 68, 84);
+        bk.strokeStyle = spec.accent2;
+        bk.lineWidth = 2.5;
+        bk.strokeRect(gx - 34, cy0 + 74, 68, 84);
+        bk.beginPath();
+        bk.moveTo(gx, cy0 + 74);
+        bk.lineTo(gx, cy0 + 158);
+        bk.moveTo(gx - 34, cy0 + 116);
+        bk.lineTo(gx + 34, cy0 + 116);
+        bk.stroke();
+      } else if (spec.motif === 'lit_zoo') {
+        bk.fillStyle = spec.accent1;
+        bk.beginPath();
+        bk.arc(gx - 10, cy0 + 118, 28, Math.PI, 0);
+        bk.lineTo(gx + 18, cy0 + 152);
+        bk.lineTo(gx - 38, cy0 + 152);
+        bk.closePath();
+        bk.fill();
+        bk.fillStyle = spec.accent2;
+        bk.beginPath();
+        bk.arc(gx + 22, cy0 + 96, 14, 0, Math.PI * 2);
+        bk.fill();
+      } else {
+        bk.fillStyle = spec.accent1;
+        bk.beginPath();
+        bk.arc(gx, cy0 + 122, 34, 0, Math.PI * 2);
+        bk.fill();
+        bk.strokeStyle = '#ffffff';
+        bk.lineWidth = 2.4;
+        bk.beginPath();
+        bk.moveTo(gx - 24, cy0 + 114);
+        bk.quadraticCurveTo(gx - 10, cy0 + 100, gx, cy0 + 116);
+        bk.quadraticCurveTo(gx + 12, cy0 + 100, gx + 26, cy0 + 114);
+        bk.stroke();
+      }
+
+      // Obi belly-band typography
+      bk.fillStyle = spec.ink;
+      bk.font = 'bold 9px monospace';
+      bk.fillText('LITERARY EDITION · SOFTCOVER', gx, ty + 210);
+    } else if (spec.cat === 'philosophy') {
+      // Refined double-hairline academic philosophy layout
+      bk.strokeStyle = spec.accent1;
+      bk.lineWidth = 1.5;
+      bk.strokeRect(cx0 + 8, cy0 + 8, cw - 16, ch - 16);
+      bk.strokeRect(cx0 + 13, cy0 + 13, cw - 26, ch - 26);
+      bkb.strokeStyle = '#525252';
+      bkb.lineWidth = 2;
+      bkb.strokeRect(cx0 + 8, cy0 + 8, cw - 16, ch - 16);
+
+      bk.fillStyle = spec.ink;
+      bk.textAlign = 'center';
+      bk.font = '600 17px Georgia, "Noto Serif SC", serif';
+      bk.fillText(spec.title, gx, cy0 + 52);
+      bk.font = '8.5px Georgia, serif';
+      bk.fillText(spec.subtitle, gx, cy0 + 70);
+
+      bk.strokeStyle = spec.accent1;
+      bk.lineWidth = 1.8;
+      if (spec.motif === 'phil_rings') {
+        for (const r of [14, 24, 34]) {
+          bk.beginPath();
+          bk.arc(gx, gy + 10, r, 0, Math.PI * 2);
+          bk.stroke();
+        }
+      } else if (spec.motif === 'phil_diamond') {
+        bk.beginPath();
+        bk.moveTo(gx, gy - 26);
+        bk.lineTo(gx + 30, gy + 10);
+        bk.lineTo(gx, gy + 46);
+        bk.lineTo(gx - 30, gy + 10);
+        bk.closePath();
+        bk.stroke();
+        bk.fillStyle = spec.accent2;
+        bk.beginPath();
+        bk.arc(gx, gy + 10, 7, 0, Math.PI * 2);
+        bk.fill();
+      } else if (spec.motif === 'phil_grid') {
+        for (let k = -2; k <= 2; k++) {
+          bk.beginPath();
+          bk.moveTo(gx + k * 14, gy - 20);
+          bk.lineTo(gx + k * 14, gy + 38);
+          bk.stroke();
+        }
+        bk.fillStyle = spec.accent2;
+        bk.fillRect(gx - 18, gy - 4, 36, 24);
+      } else {
+        bk.fillStyle = spec.accent1;
+        bk.fillRect(gx - 34, gy - 14, 68, 44);
+        bk.fillStyle = '#faf8f2';
+        bk.font = 'italic 16px Georgia, serif';
+        bk.fillText(spec.vol, gx, gy + 14);
+      }
+      bk.fillStyle = spec.ink;
+      bk.font = '9px Georgia, serif';
+      bk.fillText(`MONOGRAPH · ${spec.vol}`, gx, cy0 + ch - 24);
+    } else if (spec.cat === 'technical') {
+      // Swiss modernist technical / design manual cover
+      bk.fillStyle = spec.accent1;
+      bk.fillRect(cx0, cy0, cw, 54);
+      bk.fillStyle = '#ffffff';
+      bk.textAlign = 'left';
+      bk.font = 'bold 20px "Plus Jakarta Sans", sans-serif';
+      bk.fillText(spec.title, cx0 + 10, cy0 + 28);
+      bk.font = '8.5px monospace';
+      bk.fillText(spec.subtitle, cx0 + 10, cy0 + 44);
+
+      if (spec.motif === 'tech_optics') {
+        bk.fillStyle = spec.accent2;
+        bk.beginPath();
+        bk.moveTo(gx, gy - 32);
+        bk.lineTo(gx + 40, gy + 28);
+        bk.lineTo(gx - 40, gy + 28);
+        bk.closePath();
+        bk.fill();
+        bk.strokeStyle = spec.accent1;
+        bk.lineWidth = 3;
+        bk.beginPath();
+        bk.moveTo(cx0 + 10, gy + 4);
+        bk.lineTo(gx, gy - 2);
+        bk.lineTo(cx0 + cw - 10, gy + 18);
+        bk.stroke();
+      } else {
+        // Oscilloscope waveform diagram
+        bk.strokeStyle = 'rgba(77, 126, 168, 0.25)';
+        bk.lineWidth = 1;
+        for (let gyi = cy0 + 78; gyi <= cy0 + 188; gyi += 22) {
+          bk.beginPath();
+          bk.moveTo(cx0 + 10, gyi);
+          bk.lineTo(cx0 + cw - 10, gyi);
+          bk.stroke();
+        }
+        bk.strokeStyle = spec.accent1;
+        bk.lineWidth = 2.6;
+        bk.beginPath();
+        for (let sx = 0; sx <= cw - 20; sx += 3) {
+          const sy = gy + Math.sin(sx * 0.09) * 24 * Math.cos(sx * 0.025);
+          if (sx === 0) bk.moveTo(cx0 + 10 + sx, sy);
+          else bk.lineTo(cx0 + 10 + sx, sy);
+        }
+        bk.stroke();
+      }
+      bk.fillStyle = spec.ink;
+      bk.font = 'bold 9px monospace';
+      bk.fillText(`FIG. ${spec.vol} // TECHNICAL PRESS`, cx0 + 10, cy0 + ch - 14);
+    } else {
+      // Retro 90s Console / Handheld Game Box cover
+      // Left vertical console stripe bar
+      bk.fillStyle = spec.accent1;
+      bk.fillRect(cx0, cy0, 24, ch);
+      bk.save();
+      bk.translate(cx0 + 16, cy0 + ch * 0.5);
+      bk.rotate(-Math.PI / 2);
+      bk.fillStyle = '#ffffff';
+      bk.textAlign = 'center';
+      bk.font = 'bold 11px monospace';
+      bk.fillText('SUPER HOME SYSTEM', 0, 0);
+      bk.restore();
+
+      // Pixel-art sky & sunset horizon box art
+      const artX = cx0 + 30;
+      const artY = cy0 + 14;
+      const artW = cw - 36;
+      const artH = 144;
+      const skyG = bk.createLinearGradient(artX, artY, artX, artY + artH);
+      skyG.addColorStop(0, spec.accent2);
+      skyG.addColorStop(0.65, '#f6d6a8');
+      skyG.addColorStop(1, '#f2a294');
+      bk.fillStyle = skyG;
+      bk.fillRect(artX, artY, artW, artH);
+
+      // Sun & retro horizon perspective grid
+      bk.fillStyle = '#fff6dc';
+      bk.beginPath();
+      bk.arc(artX + artW * 0.5, artY + 66, 22, 0, Math.PI * 2);
+      bk.fill();
+      bk.fillStyle = '#3c4566';
+      bk.fillRect(artX, artY + 96, artW, artH - 96);
+      bk.strokeStyle = 'rgba(130, 232, 220, 0.55)';
+      bk.lineWidth = 1.2;
+      for (let gl = 0; gl < 5; gl++) {
+        const yLine = artY + 102 + gl * 9;
+        bk.beginPath();
+        bk.moveTo(artX, yLine);
+        bk.lineTo(artX + artW, yLine);
+        bk.stroke();
+      }
+      // Game title banner
+      bk.fillStyle = spec.ink;
+      bk.textAlign = 'left';
+      bk.font = 'bold 13px monospace';
+      bk.fillText(spec.title, artX + 2, cy0 + 182);
+      bk.font = '8.5px monospace';
+      bk.fillText(spec.subtitle, artX + 2, cy0 + 198);
+      // Rating seal
+      bk.strokeStyle = spec.ink;
+      bk.lineWidth = 1.5;
+      bk.strokeRect(artX + artW - 24, cy0 + ch - 28, 20, 20);
+      bk.font = 'bold 12px monospace';
+      bk.textAlign = 'center';
+      bk.fillText('A', artX + artW - 14, cy0 + ch - 13);
+    }
   }
 
-  // Fine woven bookbinder linen cloth & matte paper micro-grain across the entire atlas
-  for (let y = 0; y < 512; y += 3) {
-    bk.fillStyle = (y % 6 === 0) ? 'rgba(255, 250, 242, 0.06)' : 'rgba(42, 34, 28, 0.05)';
+  // Soft tactile book-paper & cloth linen micro-grain across the 1024x1024 atlas
+  for (let y = 0; y < 1024; y += 3) {
+    bk.fillStyle = y % 6 === 0 ? 'rgba(255, 252, 245, 0.055)' : 'rgba(58, 46, 38, 0.035)';
     bk.fillRect(0, y, 1024, 1.5);
-    bkb.fillStyle = (y % 6 === 0) ? 'rgba(210, 210, 210, 0.14)' : 'rgba(60, 60, 60, 0.14)';
+    bkb.fillStyle = y % 6 === 0 ? 'rgba(205, 205, 205, 0.11)' : 'rgba(72, 72, 72, 0.11)';
     bkb.fillRect(0, y, 1024, 1.5);
   }
   for (let x = 0; x < 1024; x += 4) {
-    bkb.fillStyle = (x % 8 === 0) ? 'rgba(200, 200, 200, 0.10)' : 'rgba(70, 70, 70, 0.10)';
-    bkb.fillRect(x, 0, 1.5, 512);
+    bkb.fillStyle = x % 8 === 0 ? 'rgba(195, 195, 195, 0.08)' : 'rgba(78, 78, 78, 0.08)';
+    bkb.fillRect(x, 0, 1.5, 1024);
   }
 
   const bookCoverAtlas = track(finalizeTexture(bkCanvas, maxAniso, 1, 1));
   const bookCoverBump = track(finalizeTexture(bkBumpCanvas, maxAniso, 1, 1, true));
+
+  // 22b. 12-inch Vinyl Record Jacket Atlas (1024x512, 4x2 = 8 Distinct Lo-Fi / Jazz / Dreamcore Album Sleeves)
+  //      Each 256x256 tile: left strip [0..18] = jacket spine, main [18..256] = square album cover art!
+  const vsCanvas = document.createElement('canvas');
+  vsCanvas.width = 1024;
+  vsCanvas.height = 512;
+  const vs = vsCanvas.getContext('2d')!;
+  const vinylSpecs = [
+    {
+      bg1: '#f4d9be',
+      bg2: '#c5a5cf',
+      spine: '#e4c2a2',
+      accent1: '#f8efe2',
+      accent2: '#6b538a',
+      title: 'MIDNIGHT CORRIDOR',
+      artist: 'LATE FM TRIO',
+      art: 'corridor',
+    },
+    {
+      bg1: '#cfe6f0',
+      bg2: '#f2c8b8',
+      spine: '#b8d7e5',
+      accent1: '#e68c74',
+      accent2: '#3f5a75',
+      title: 'PASTEL TRAMWAY',
+      artist: '1998 DRIFT',
+      art: 'tram',
+    },
+    {
+      bg1: '#d8e8d4',
+      bg2: '#f3dfb9',
+      spine: '#c2d8be',
+      accent1: '#c97e56',
+      accent2: '#466957',
+      title: 'AMBER RAIN WINDOW',
+      artist: 'RHODES & TEA',
+      art: 'rain',
+    },
+    {
+      bg1: '#dfd2ee',
+      bg2: '#b8c8e8',
+      spine: '#cbbce0',
+      accent1: '#f8e0a4',
+      accent2: '#4d5d8c',
+      title: 'LIMINAL 19:57',
+      artist: 'STATIC NOSTALGIA',
+      art: 'moon',
+    },
+    {
+      bg1: '#f7e5cc',
+      bg2: '#e9b28a',
+      spine: '#e8cfa9',
+      accent1: '#3b4a5e',
+      accent2: '#d96954',
+      title: 'SUNLIT BOSSA',
+      artist: 'KYOTO QUARTET',
+      art: 'sun',
+    },
+    {
+      bg1: '#eceae4',
+      bg2: '#d8d5cc',
+      spine: '#dddad2',
+      accent1: '#528799',
+      accent2: '#d98c66',
+      title: 'MODULAR TAPE 04',
+      artist: 'ANALOG ARCHIVE',
+      art: 'bauhaus',
+    },
+    {
+      bg1: '#f5d9df',
+      bg2: '#d7e2f2',
+      spine: '#e8c4cc',
+      accent1: '#ffffff',
+      accent2: '#7a638f',
+      title: 'CLOUD GALLERY',
+      artist: 'SOFT CHIMES',
+      art: 'clouds',
+    },
+    {
+      bg1: '#e4efe8',
+      bg2: '#cadbe0',
+      spine: '#cfe0d6',
+      accent1: '#5b8a6b',
+      accent2: '#df9d6b',
+      title: 'BOTANICAL LO-FI',
+      artist: 'GREENHOUSE',
+      art: 'leaves',
+    },
+  ] as const;
+
+  for (let i = 0; i < 8; i++) {
+    const col = i % 4;
+    const row = Math.floor(i / 4);
+    const tx = col * 256;
+    const ty = row * 256;
+    const sp = vinylSpecs[i];
+
+    // Spine strip [0..20]
+    vs.fillStyle = sp.spine;
+    vs.fillRect(tx, ty, 20, 256);
+    vs.fillStyle = sp.accent2;
+    vs.fillRect(tx + 5, ty + 18, 10, 8);
+    vs.fillRect(tx + 5, ty + 230, 10, 6);
+    vs.save();
+    vs.translate(tx + 13, ty + 128);
+    vs.rotate(-Math.PI / 2);
+    vs.fillStyle = '#2d2633';
+    vs.font = 'bold 9px monospace';
+    vs.textAlign = 'center';
+    vs.fillText(sp.title, 0, 0);
+    vs.restore();
+
+    // Square Album Cover [20..256]
+    const ax = tx + 20;
+    const aw = 236;
+    const g = vs.createLinearGradient(ax, ty, ax + aw, ty + 256);
+    g.addColorStop(0, sp.bg1);
+    g.addColorStop(1, sp.bg2);
+    vs.fillStyle = g;
+    vs.fillRect(ax, ty, aw, 256);
+
+    const cx = ax + aw * 0.5;
+    const cy = ty + 132;
+    if (sp.art === 'corridor') {
+      for (let k = 0; k < 4; k++) {
+        const inset = 22 + k * 16;
+        vs.strokeStyle = k === 3 ? sp.accent1 : 'rgba(107, 83, 138, 0.42)';
+        vs.lineWidth = 3;
+        vs.strokeRect(ax + inset, ty + 52 + k * 14, aw - inset * 2, 168 - k * 24);
+      }
+      vs.fillStyle = sp.accent1;
+      vs.beginPath();
+      vs.arc(cx, cy + 8, 20, 0, Math.PI * 2);
+      vs.fill();
+    } else if (sp.art === 'tram') {
+      vs.fillStyle = sp.accent1;
+      vs.beginPath();
+      vs.arc(cx + 26, ty + 104, 34, 0, Math.PI * 2);
+      vs.fill();
+      vs.fillStyle = sp.accent2;
+      vs.fillRect(ax + 24, ty + 148, aw - 48, 48);
+      vs.fillStyle = '#fff5e4';
+      for (let wx = 0; wx < 4; wx++) {
+        vs.fillRect(ax + 36 + wx * 42, ty + 158, 28, 22);
+      }
+    } else if (sp.art === 'rain') {
+      vs.fillStyle = '#fff9ee';
+      vs.fillRect(ax + 38, ty + 56, aw - 76, 128);
+      vs.fillStyle = sp.accent1;
+      vs.beginPath();
+      vs.arc(cx, ty + 124, 28, 0, Math.PI * 2);
+      vs.fill();
+      vs.strokeStyle = sp.accent2;
+      vs.lineWidth = 3;
+      vs.strokeRect(ax + 38, ty + 56, aw - 76, 128);
+      vs.beginPath();
+      vs.moveTo(cx, ty + 56);
+      vs.lineTo(cx, ty + 184);
+      vs.moveTo(ax + 38, ty + 120);
+      vs.lineTo(ax + aw - 38, ty + 120);
+      vs.stroke();
+    } else if (sp.art === 'moon') {
+      vs.fillStyle = sp.accent1;
+      vs.beginPath();
+      vs.arc(cx, ty + 114, 42, 0, Math.PI * 2);
+      vs.fill();
+      vs.fillStyle = sp.bg1;
+      vs.beginPath();
+      vs.arc(cx + 16, ty + 106, 34, 0, Math.PI * 2);
+      vs.fill();
+      vs.strokeStyle = sp.accent2;
+      vs.lineWidth = 2;
+      for (let wy = 0; wy < 5; wy++) {
+        vs.beginPath();
+        vs.moveTo(ax + 24, ty + 178 + wy * 10);
+        vs.lineTo(ax + aw - 24, ty + 178 + wy * 10);
+        vs.stroke();
+      }
+    } else if (sp.art === 'sun') {
+      vs.fillStyle = sp.accent2;
+      vs.beginPath();
+      vs.arc(cx, ty + 132, 54, Math.PI, 0);
+      vs.fill();
+      vs.fillStyle = sp.accent1;
+      vs.fillRect(ax + 22, ty + 136, aw - 44, 62);
+      vs.fillStyle = '#f8efe0';
+      vs.fillRect(ax + 44, ty + 150, aw - 88, 6);
+      vs.fillRect(ax + 64, ty + 166, aw - 128, 5);
+    } else if (sp.art === 'bauhaus') {
+      vs.fillStyle = sp.accent1;
+      vs.fillRect(ax + 30, ty + 62, 84, 124);
+      vs.fillStyle = sp.accent2;
+      vs.beginPath();
+      vs.arc(cx + 28, ty + 134, 44, 0, Math.PI * 2);
+      vs.fill();
+      vs.strokeStyle = '#2d3138';
+      vs.lineWidth = 2.5;
+      vs.strokeRect(ax + 46, ty + 78, 136, 98);
+    } else if (sp.art === 'clouds') {
+      vs.fillStyle = 'rgba(255, 255, 255, 0.85)';
+      for (const [ox, oy, r] of [
+        [-34, 128, 32],
+        [0, 114, 40],
+        [36, 130, 30],
+        [-12, 146, 32],
+        [22, 146, 28],
+      ] as const) {
+        vs.beginPath();
+        vs.arc(cx + ox, ty + oy, r, 0, Math.PI * 2);
+        vs.fill();
+      }
+    } else {
+      vs.fillStyle = sp.accent1;
+      for (let lf = 0; lf < 6; lf++) {
+        const ang = (lf / 6) * Math.PI * 2;
+        vs.beginPath();
+        vs.ellipse(
+          cx + Math.cos(ang) * 32,
+          cy + Math.sin(ang) * 32,
+          24,
+          11,
+          ang,
+          0,
+          Math.PI * 2
+        );
+        vs.fill();
+      }
+      vs.fillStyle = sp.accent2;
+      vs.beginPath();
+      vs.arc(cx, cy, 16, 0, Math.PI * 2);
+      vs.fill();
+    }
+
+    // Minimal album header & artist footer
+    vs.fillStyle = '#2a2430';
+    vs.textAlign = 'left';
+    vs.font = 'bold 12px "Plus Jakarta Sans", sans-serif';
+    vs.fillText(sp.title, ax + 16, ty + 28);
+    vs.font = '9px monospace';
+    vs.fillStyle = 'rgba(42, 36, 48, 0.72)';
+    vs.fillText(`${sp.artist} · 33⅓ RPM`, ax + 16, ty + 240);
+
+    // Subtle cardboard sleeve ring-wear patina
+    vs.strokeStyle = 'rgba(255, 255, 255, 0.16)';
+    vs.lineWidth = 4;
+    vs.beginPath();
+    vs.arc(cx, ty + 128, 92, 0, Math.PI * 2);
+    vs.stroke();
+  }
+  const vinylSleeveAtlas = track(finalizeTexture(vsCanvas, maxAniso, 1, 1));
 
   // --- BATHROOM CERAMIC TILE (warm creamy-ivory large tiles with subtle lavender-taupe grout) ---
   const bathTileCanvas = document.createElement('canvas');
@@ -5723,6 +6319,7 @@ export function createProceduralTextures(renderer: THREE.WebGLRenderer): Procedu
     brushedSteel,
     bookCoverAtlas,
     bookCoverBump,
+    vinylSleeveAtlas,
     bathroomTile,
     bathroomWall,
     bathPlaidMat,

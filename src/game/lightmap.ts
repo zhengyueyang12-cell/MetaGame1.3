@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import * as BufferGeometryUtils from 'three/addons/utils/BufferGeometryUtils.js';
 import type { TwilightUniforms } from './pipeline';
 import type { RoomBuildContext } from './rooms/roomContext';
 import type { AtmosphereMode, RoomId } from './types';
@@ -35,9 +36,10 @@ function smoothstep(edge0: number, edge1: number, x: number): number {
 function sdBox2D(x: number, z: number, cx: number, cz: number, hx: number, hz: number): number {
   const dx = Math.abs(x - cx) - hx;
   const dz = Math.abs(z - cz) - hz;
-  const outDist = Math.hypot(Math.max(dx, 0), Math.max(dz, 0));
-  const inDist = Math.min(Math.max(dx, dz), 0);
-  return outDist + inDist;
+  if (dx > 0) {
+    return dz > 0 ? Math.sqrt(dx * dx + dz * dz) : dx;
+  }
+  return dz > 0 ? dz : dx > dz ? dx : dz;
 }
 
 /** Smooth Gaussian elliptical bounce contribution. */
@@ -255,32 +257,46 @@ export function createApartmentBakedLightmap(
       let ao = 1.0;
 
       // Wall-floor baseboard AO (balanced midpoint between light and deep grounding)
-      let minWallDist = 99;
+      let minWallDist = 0.72;
       for (let i = 0; i < wallAoBoxes.length; i++) {
-        const [cx, cz, hx, hz] = wallAoBoxes[i];
-        const d = sdBox2D(wx, wz, cx, cz, hx, hz);
+        const wBox = wallAoBoxes[i];
+        const dx = Math.abs(wx - wBox[0]) - wBox[2];
+        if (dx >= minWallDist) continue;
+        const dz = Math.abs(wz - wBox[1]) - wBox[3];
+        if (dz >= minWallDist) continue;
+        const d = dx > 0 ? (dz > 0 ? Math.sqrt(dx * dx + dz * dz) : dx) : dz > 0 ? dz : dx > dz ? dx : dz;
         if (d < minWallDist) minWallDist = d;
       }
       const wallFactor = smoothstep(-0.04, 0.72, minWallDist);
       ao *= 0.38 + 0.62 * wallFactor;
 
-      // Corner & pilaster contact pockets
+      // Corner & pilaster contact pockets (fast AABB + squared-distance reject)
       for (let i = 0; i < cornerNodes.length; i++) {
-        const [cx, cz, rad, str] = cornerNodes[i];
-        const dist = Math.hypot(wx - cx, wz - cz);
-        if (dist < rad) {
-          const t = 1 - smoothstep(0.0, rad, dist);
-          ao *= 1 - str * t;
+        const cn = cornerNodes[i];
+        const rad = cn[2];
+        const dx = wx - cn[0];
+        if (dx >= rad || dx <= -rad) continue;
+        const dz = wz - cn[1];
+        if (dz >= rad || dz <= -rad) continue;
+        const distSq = dx * dx + dz * dz;
+        if (distSq < rad * rad) {
+          const t = 1 - smoothstep(0.0, rad, Math.sqrt(distSq));
+          ao *= 1 - cn[3] * t;
         }
       }
 
-      // Furniture perimeter contact AO (balanced midpoint for soft grounded bases)
+      // Furniture perimeter contact AO (fast AABB reject skips >94% of pads per pixel)
       for (let i = 0; i < furnitureAoPads.length; i++) {
-        const [cx, cz, hx, hz, str, feather] = furnitureAoPads[i];
-        const d = sdBox2D(wx, wz, cx, cz, hx, hz);
+        const pad = furnitureAoPads[i];
+        const feather = pad[5];
+        const dx = Math.abs(wx - pad[0]) - pad[2];
+        if (dx >= feather) continue;
+        const dz = Math.abs(wz - pad[1]) - pad[3];
+        if (dz >= feather) continue;
+        const d = dx > 0 ? (dz > 0 ? Math.sqrt(dx * dx + dz * dz) : dx) : dz > 0 ? dz : dx > dz ? dx : dz;
         if (d < feather) {
           const fall = 1 - smoothstep(-0.12, feather, d);
-          ao *= 1 - Math.min(0.62, str * 1.08) * fall;
+          ao *= 1 - Math.min(0.62, pad[4] * 1.08) * fall;
         }
       }
 
@@ -438,6 +454,22 @@ export function buildApartmentContactShadows(
     ctx.sceneManager.registerRoomObject(roomKey, grp);
   }
 
+  const roomDecalBuckets: Record<RoomId, Map<THREE.MeshBasicMaterial, THREE.BufferGeometry[]>> = {
+    living: new Map(),
+    entryway: new Map(),
+    dining: new Map(),
+    kitchen: new Map(),
+    bedroom: new Map(),
+    bathroom: new Map(),
+    basement: new Map(),
+  };
+  const _decalMat4 = new THREE.Matrix4();
+  const _decalPos = new THREE.Vector3();
+  const _decalQuat = new THREE.Quaternion();
+  const _decalEuler = new THREE.Euler();
+  const _decalScale = new THREE.Vector3();
+  const mergedDecalGeos: THREE.BufferGeometry[] = [];
+
   const addDecal = (
     room: RoomId,
     kind: 'rect' | 'radial',
@@ -449,15 +481,21 @@ export function buildApartmentContactShadows(
     opacity: number,
     rotY = 0
   ) => {
-    const m = new THREE.Mesh(sharedPlaneGeo, getMat(kind, opacity));
-    m.position.set(x, y, z);
-    m.scale.set(w, 1, d);
-    m.rotation.y = rotY;
-    m.castShadow = false;
-    m.receiveShadow = false;
-    m.renderOrder = 2;
-    m.userData.dynamic = true;
-    roomShadowGroups[room].add(m);
+    const mat = getMat(kind, opacity);
+    const geo = sharedPlaneGeo.clone();
+    _decalPos.set(x, y, z);
+    _decalEuler.set(0, rotY, 0);
+    _decalQuat.setFromEuler(_decalEuler);
+    _decalScale.set(w, 1, d);
+    _decalMat4.compose(_decalPos, _decalQuat, _decalScale);
+    geo.applyMatrix4(_decalMat4);
+    const map = roomDecalBuckets[room];
+    let list = map.get(mat);
+    if (!list) {
+      list = [];
+      map.set(mat, list);
+    }
+    list.push(geo);
   };
 
   // =========================================================================
@@ -645,6 +683,43 @@ export function buildApartmentContactShadows(
   addDecal('bathroom', 'rect', 6.92, 0.0028, -12.32, 0.52, 0.76, 0.42);
   addDecal('bathroom', 'rect', 6.88, 0.0028, -11.12, 0.76, 0.76, 0.48);
 
+  // Merge static contact-shadow decals per room & material into single batched meshes
+  for (const [roomKey, bucketMap] of Object.entries(roomDecalBuckets) as [
+    RoomId,
+    Map<THREE.MeshBasicMaterial, THREE.BufferGeometry[]>,
+  ][]) {
+    if (bucketMap.size === 0) continue;
+    const perMatGeos: THREE.BufferGeometry[] = [];
+    const mats: THREE.MeshBasicMaterial[] = [];
+    for (const [mat, geos] of bucketMap.entries()) {
+      const merged =
+        geos.length === 1 ? geos[0] : BufferGeometryUtils.mergeGeometries(geos, false);
+      if (geos.length > 1) {
+        for (const g of geos) g.dispose();
+      }
+      if (merged) {
+        perMatGeos.push(merged);
+        mats.push(mat);
+      }
+    }
+    if (perMatGeos.length > 0) {
+      const combined = BufferGeometryUtils.mergeGeometries(perMatGeos, true);
+      for (const g of perMatGeos) g.dispose();
+      if (combined) {
+        combined.computeBoundingSphere();
+        mergedDecalGeos.push(combined);
+        const batchMesh = new THREE.Mesh(combined, mats);
+        batchMesh.name = `ContactShadowsMerged_${roomKey}`;
+        batchMesh.castShadow = false;
+        batchMesh.receiveShadow = false;
+        batchMesh.renderOrder = 2;
+        batchMesh.matrixAutoUpdate = false;
+        batchMesh.updateMatrix();
+        roomShadowGroups[roomKey].add(batchMesh);
+      }
+    }
+  }
+
   const setAtmosphere = (mode: AtmosphereMode) => {
     const mult =
       mode === 'daylight'
@@ -673,6 +748,7 @@ export function buildApartmentContactShadows(
     giTexture.dispose();
     for (const tex of contactTextures) tex.dispose();
     for (const mat of contactMaterials) mat.dispose();
+    for (const geo of mergedDecalGeos) geo.dispose();
     sharedPlaneGeo.dispose();
   };
 

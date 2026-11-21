@@ -43,12 +43,13 @@ export function buildApartmentStructure(ctx: RoomBuildContext): void {
     metalness: 0.0,
     celStrength: 0.58,
   });
+  // Unified Entryway, Dining & Kitchen wall material matching Living Room wallpaper & color seamlessly
   const diningWallMat = mat({
-    map: textures.wallpaperDining,
-    color: 0xfff7f4,
+    map: textures.wallpaperLiving,
+    color: 0xfff8fa,
     roughness: 0.94,
     metalness: 0.0,
-    celStrength: 0.58,
+    celStrength: 0.56,
   });
   // Bright warm honey-wood wainscoting (matte clay/gouache finish, zero gloss)
   const wainscotMat = mat({
@@ -822,11 +823,11 @@ export function buildApartmentStructure(ctx: RoomBuildContext): void {
     polygonOffsetUnits: -1,
   });
   const diningOverlayMat = mat({
-    map: textures.wallpaperDining,
-    color: 0xf6eee2,
-    roughness: 0.90,
+    map: textures.wallpaperLiving,
+    color: 0xfff8fa,
+    roughness: 0.94,
     metalness: 0.0,
-    celStrength: 0.62,
+    celStrength: 0.56,
     polygonOffset: true,
     polygonOffsetFactor: -1,
     polygonOffsetUnits: -1,

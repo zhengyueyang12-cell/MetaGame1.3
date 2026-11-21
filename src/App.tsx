@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { GlitchCatDialogue } from './components/GlitchCatDialogue';
 import { HudOverlay } from './components/HudOverlay';
-import { InventoryModal } from './components/InventoryModal';
+import { InventoryModal, type InventoryModalTab } from './components/InventoryModal';
 import { PaperAirplaneNoteModal } from './components/PaperAirplaneNoteModal';
 import { ArcadeCabinetStage } from './components/arcade/ArcadeCabinetStage';
 import { Act5CinemaFinale } from './components/vn/Act5CinemaFinale';
@@ -184,6 +184,7 @@ export default function App() {
     paperAirplaneCaptured: false,
   }));
   const [showInventory, setShowInventory] = useState(false);
+  const [inventoryTab, setInventoryTab] = useState<InventoryModalTab>('inventory');
   const [showPaperNote, setShowPaperNote] = useState(false);
   const [hitFeedback, setHitFeedback] = useState<HitFeedbackPayload | null>(null);
   const hitTimerRef = useRef<number | null>(null);
@@ -321,6 +322,7 @@ export default function App() {
     setOsAlert(null);
     setPcView('closed');
     engineRef.current?.exitPcFocus();
+    engineRef.current?.requestPointerLock();
   }, []);
 
   const openArcadeCabinet = useCallback(() => {
@@ -420,8 +422,11 @@ export default function App() {
         setShowInventory((prev) => {
           const next = !prev;
           engine.playInventorySound(next);
-          if (next && document.pointerLockElement) {
-            document.exitPointerLock?.();
+          if (next) {
+            setInventoryTab('inventory');
+            if (document.pointerLockElement) {
+              document.exitPointerLock?.();
+            }
           }
           return next;
         });
@@ -1006,6 +1011,7 @@ export default function App() {
   const handleSelectRoom = useCallback((room: RoomId) => {
     setViewMode('first-person');
     engineRef.current?.jumpToRoom(room);
+    engineRef.current?.requestPointerLock();
   }, []);
 
   const handleSelectViewMode = useCallback((mode: ViewMode) => {
@@ -1172,15 +1178,20 @@ export default function App() {
   return (
     <main className="relative h-screen w-screen overflow-hidden bg-[#161024]">
       {/* Dedicated isolated 3D WebGL mount container */}
-      <div ref={mountRef} className="h-full w-full cursor-grab active:cursor-grabbing" />
+      <div
+        ref={mountRef}
+        className={`h-full w-full ${
+          viewMode === 'first-person'
+            ? 'cursor-crosshair'
+            : 'cursor-grab active:cursor-grabbing'
+        }`}
+      />
 
       {/* 3D Apartment HUD Overlay (visible only when not seated at the monitor) */}
       {pcView === 'closed' && !pcFocus.active && (
         <HudOverlay
           currentRoom={currentRoom}
           viewMode={viewMode}
-          atmosphere={atmosphere}
-          settings={settings}
           hoverTarget={hoverTarget}
           inspectMessage={catDialogue ? null : inspectMessage}
           discoveredClues={discoveredClues}
@@ -1195,12 +1206,6 @@ export default function App() {
           onToggleDock={() => setDockCollapsed((c) => !c)}
           onSelectRoom={handleSelectRoom}
           onSelectViewMode={handleSelectViewMode}
-          onSelectAtmosphere={handleSelectAtmosphere}
-          onToggleSetting={handleToggleSetting}
-          onChangeBrightness={handleChangeBrightness}
-          livingLightOn={livingLightOn}
-          onToggleLivingLight={handleToggleLivingLight}
-          onRequestPointerLock={handleRequestPointerLock}
           onDismissInspect={() => setInspectMessage(null)}
           onDismissRealityAlert={() => setRealityAlert(null)}
           onOpenComputer={openComputerAtActiveStage}
@@ -1212,6 +1217,13 @@ export default function App() {
           onOpenInventory={() => {
             if (document.pointerLockElement) document.exitPointerLock?.();
             engineRef.current?.playInventorySound(true);
+            setInventoryTab('inventory');
+            setShowInventory(true);
+          }}
+          onOpenSettings={() => {
+            if (document.pointerLockElement) document.exitPointerLock?.();
+            engineRef.current?.playInventorySound(true);
+            setInventoryTab('settings');
             setShowInventory(true);
           }}
           onSwitchAmmo={() => engineRef.current?.switchToyGunAmmo()}
@@ -1225,10 +1237,21 @@ export default function App() {
 
       <InventoryModal
         open={showInventory}
+        activeTab={inventoryTab}
+        onTabChange={setInventoryTab}
         inventory={inventory}
+        currentRoom={currentRoom}
+        viewMode={viewMode}
+        atmosphere={atmosphere}
+        settings={settings}
+        livingLightOn={livingLightOn}
+        isPointerLocked={isPointerLocked}
         onClose={() => {
           engineRef.current?.playInventorySound(false);
           setShowInventory(false);
+          if (viewMode === 'first-person') {
+            engineRef.current?.requestPointerLock();
+          }
         }}
         onSelectSlot={(idx) => engineRef.current?.selectInventorySlot(idx)}
         onToggleEquip={(idx) => engineRef.current?.toggleEquipSelectedItem(idx)}
@@ -1238,6 +1261,13 @@ export default function App() {
           engineRef.current?.playPaperUnfoldSound();
           setShowPaperNote(true);
         }}
+        onSelectRoom={handleSelectRoom}
+        onSelectViewMode={handleSelectViewMode}
+        onSelectAtmosphere={handleSelectAtmosphere}
+        onToggleSetting={handleToggleSetting}
+        onChangeBrightness={handleChangeBrightness}
+        onToggleLivingLight={handleToggleLivingLight}
+        onRequestPointerLock={handleRequestPointerLock}
       />
 
       <PaperAirplaneNoteModal
@@ -1245,13 +1275,21 @@ export default function App() {
         onClose={() => {
           engineRef.current?.playPaperUnfoldSound();
           setShowPaperNote(false);
+          if (viewMode === 'first-person') {
+            engineRef.current?.requestPointerLock();
+          }
         }}
       />
 
       {pcView === 'closed' && catDialogue && (
         <GlitchCatDialogue
           lines={catDialogue}
-          onClose={() => setCatDialogue(null)}
+          onClose={() => {
+            setCatDialogue(null);
+            if (viewMode === 'first-person') {
+              engineRef.current?.requestPointerLock();
+            }
+          }}
         />
       )}
 

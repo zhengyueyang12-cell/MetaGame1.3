@@ -325,6 +325,7 @@ export class ApartmentEngine {
   private baseSunIntensity = 1.48;
   private baseWindowFillIntensity = 1.15;
   private shadowDirty = true;
+  private shadowImmediate = true;
   private shadowUpdateCooldown = 0;
   private lastShadowSilhouetteVis = false;
   private mirrorFrameCounter = 0;
@@ -544,6 +545,8 @@ export class ApartmentEngine {
   private lastPointerX = 0;
   private lastPointerY = 0;
   private isPointerLocked = false;
+  private lockedOnThisPointerDown = false;
+  private pointerLockSupported = true;
   private raycaster = new THREE.Raycaster();
   private doorRaycaster = new THREE.Raycaster();
   private interactRaycastTargets: THREE.Object3D[] = [];
@@ -829,6 +832,9 @@ export class ApartmentEngine {
       this.ctx.doors,
       this.ctx.ceilingLamps
     );
+    // Ensure the first rendered frame has fresh shadows matching the active starting rooms
+    this.shadowDirty = true;
+    this.shadowImmediate = true;
   }
 
   private setupLighting(): void {
@@ -1094,7 +1100,11 @@ export class ApartmentEngine {
   private buildScene(): void {
     const playDoor = (open: boolean) => this.audio.playDoor(open);
     buildApartmentStructure(this.ctx);
-    buildLivingRoom(this.ctx, playDoor);
+    buildLivingRoom(this.ctx, playDoor, {
+      onCycleTurntable: () => this.audio.cycleVinylTurntable(),
+      onNextTrack: () => this.audio.nextVinylTrack(),
+      onTogglePlay: () => this.audio.toggleVinylPlayback(),
+    });
     buildBathroom(this.ctx, playDoor);
     buildEntryway(this.ctx, playDoor);
     buildNonEuclidCorridor(this.ctx, playDoor);
@@ -1938,6 +1948,40 @@ export class ApartmentEngine {
     }
   }
 
+  private updateTurntable(dt: number, elapsed: number): void {
+    const rig = this.ctx.turntableRig;
+    if (!rig) return;
+
+    // 33⅓ RPM = 3.49066 rad/s clockwise when viewed from above; smooth belt-drive spin-up & coast-down
+    const targetSpeed = rig.isPlaying ? 3.49 : 0.0;
+    rig.spinSpeed = THREE.MathUtils.damp(rig.spinSpeed, targetSpeed, rig.isPlaying ? 4.2 : 2.6, dt);
+    if (rig.spinSpeed > 0.001) {
+      rig.platterGroup.rotation.y -= rig.spinSpeed * dt;
+    }
+
+    // Smoothly swing S-curved metal tonearm onto the outer vinyl groove while playing, park on rest when paused
+    const targetArmAngle = rig.isPlaying ? 0.36 : 0.0;
+    rig.armAngle = THREE.MathUtils.damp(rig.armAngle, targetArmAngle, 5.5, dt);
+    rig.tonearmPivot.rotation.y = rig.armAngle;
+
+    // Gentle warm VU meter & indicator pulse synchronized to slow ~70 BPM groove while playing
+    if (rig.isPlaying && rig.vuGlowMats.length > 0) {
+      const pulse = 0.86 + 0.14 * Math.sin(elapsed * 7.33);
+      for (let i = 0; i < rig.vuGlowMats.length; i++) {
+        rig.vuGlowMats[i].color.setRGB(1.0 * pulse, 0.82 * pulse, 0.52 * pulse);
+      }
+    }
+
+    // Update 3D spatial presence & room muffling for the ambient Lo-Fi vinyl player (zero allocations)
+    if (rig.isPlaying) {
+      const dx = this.playerFeetPos.x - rig.worldPos.x;
+      const dy = this.playerFeetPos.y + 1.4 - rig.worldPos.y;
+      const dz = this.playerFeetPos.z - rig.worldPos.z;
+      const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+      this.audio.updateVinylSpatial(dist, this.currentRoom);
+    }
+  }
+
   /**
    * Initializes the uncanny 'Ghost' Dust Mote particle system rendered
    * exclusively inside the planar mirror view pass.
@@ -2477,6 +2521,10 @@ export class ApartmentEngine {
 
   private onPointerLockChange = (): void => {
     this.isPointerLocked = document.pointerLockElement === this.renderer.domElement;
+    if (this.isPointerLocked) {
+      this.isDraggingLook = false;
+      this.pointerLockSupported = true;
+    }
     this.callbacks.onPointerLockChange(this.isPointerLocked);
   };
 
@@ -2484,7 +2532,23 @@ export class ApartmentEngine {
     if (this.inputSuspended) return;
     this.audio.unlock();
     if (this.viewMode !== 'first-person') return;
-    // Instant snappy fire when pointer-locked and holding Toy Gun
+    this.lockedOnThisPointerDown = false;
+
+    // Default mouse lock during first-person exploration: clicking the canvas immediately locks the cursor
+    if (!this.isPointerLocked && e.button === 0 && this.pcFocusState === 'none') {
+      if (this.pointerLockSupported) {
+        this.lockedOnThisPointerDown = true;
+        this.requestPointerLock();
+      }
+      // Keep drag-look initialized as an instant fallback if a sandboxed iframe or ESC cooldown declines lock
+      this.isDraggingLook = true;
+      this.dragMovedDist = 0;
+      this.lastPointerX = e.clientX;
+      this.lastPointerY = e.clientY;
+      return;
+    }
+
+    // Instant snappy fire / note open when pointer-locked
     if (this.isPointerLocked && e.button === 0 && this.pcFocusState === 'none') {
       const equipped = this.getEquippedItem();
       if (equipped?.id === 'toy_gun') {
@@ -2541,10 +2605,18 @@ export class ApartmentEngine {
   private onPointerUp = (e: PointerEvent): void => {
     if (this.inputSuspended || this.viewMode !== 'first-person') {
       this.isDraggingLook = false;
+      this.lockedOnThisPointerDown = false;
       return;
     }
+    const wasLockClick = this.lockedOnThisPointerDown;
+    this.lockedOnThisPointerDown = false;
     const wasClick = this.isDraggingLook && this.dragMovedDist < 6;
     this.isDraggingLook = false;
+
+    // Do not accidentally fire or trigger an interaction on the click that acquired pointer lock
+    if (wasLockClick && (this.isPointerLocked || this.pointerLockSupported)) {
+      return;
+    }
 
     if (wasClick) {
       const rect = this.renderer.domElement.getBoundingClientRect();
@@ -2578,10 +2650,30 @@ export class ApartmentEngine {
     if (this.viewMode !== 'first-person') {
       this.setViewMode('first-person');
     }
+    if (document.pointerLockElement === this.renderer.domElement) {
+      return;
+    }
+    if (typeof this.renderer.domElement.requestPointerLock !== 'function') {
+      this.pointerLockSupported = false;
+      this.lockedOnThisPointerDown = false;
+      return;
+    }
     try {
-      this.renderer.domElement.requestPointerLock?.();
+      const maybePromise = this.renderer.domElement.requestPointerLock() as unknown as
+        | Promise<void>
+        | undefined;
+      if (maybePromise && typeof maybePromise.catch === 'function') {
+        maybePromise.catch((err: unknown) => {
+          // Only clear the click-swallow flag; do NOT permanently disable lock because
+          // browsers reject briefly right after ESC (1.25s security cooldown).
+          this.lockedOnThisPointerDown = false;
+          if (err && typeof err === 'object' && 'name' in err && err.name === 'NotSupportedError') {
+            this.pointerLockSupported = false;
+          }
+        });
+      }
     } catch {
-      // Fallback drag-to-look always works inside restricted iframes
+      this.lockedOnThisPointerDown = false;
     }
   }
 
@@ -2932,6 +3024,7 @@ export class ApartmentEngine {
       this.ctx.ceilingLamps
     );
     this.shadowDirty = true;
+    this.shadowImmediate = true;
   }
 
   public applyAtmosphere(mode: AtmosphereMode): void {
@@ -3149,6 +3242,7 @@ export class ApartmentEngine {
       this.postRig.ssaoController.applyToUniforms(this.uniforms);
     }
     this.shadowDirty = true;
+    this.shadowImmediate = true;
 
     // Relocate or update stray glitch cat for the new atmosphere mode
     if (!this.catState.consumed) {
@@ -4281,6 +4375,10 @@ export class ApartmentEngine {
         d.currentAngle = THREE.MathUtils.damp(d.currentAngle, targetAngle, 15.0, dt);
         d.angularVel = (d.currentAngle - prevAngle) / Math.max(dt, 1e-4);
         d.pivot.rotation.y = d.currentAngle;
+        if (Math.abs(prevAngle) <= 0.05 && Math.abs(d.currentAngle) > 0.05) {
+          this.shadowDirty = true;
+          this.shadowImmediate = true;
+        }
       } else {
         // Player cleared doorway or stepped back
         if (d.isBeingPushed) {
@@ -4400,34 +4498,39 @@ export class ApartmentEngine {
     }
 
     // Deep Non-Euclidean contraction:
-    // Starts 68m away (X = -76.0) and hyperbolically closes in to X = -16.00 (exact bay boundary!) over 7.4m of walking!
+    // Starts 68m away (X = -76.0) and finishes locking cleanly at X = -16.00 (exact bay seam!)
+    // over 5.4m of walking (by X = -13.4, still 2.6m ahead of the door!) so Bay 2 is strictly
+    // hidden BEFORE the player ever gets close enough to open the end door.
     const START_END_X = -76.0;
     const STOP_END_X = -16.00;
-    const WALK_SPAN = 7.4;
+    const WALK_SPAN = 5.4;
     const walkDepth = THREE.MathUtils.clamp(-8.0 - this.playerFeetPos.x, 0, WALK_SPAN);
     const p = walkDepth / WALK_SPAN;
-    const endX = STOP_END_X + (START_END_X - STOP_END_X) * Math.pow(Math.max(0, 1.0 - p), 2.25);
+    const endX =
+      p >= 0.999
+        ? STOP_END_X
+        : STOP_END_X + (START_END_X - STOP_END_X) * Math.pow(Math.max(0, 1.0 - p), 2.35);
     corr.endGroup.position.x = endX;
 
-    // Hide modular corridor bays at or behind endGroup so Bay 2 (-16..-20) NEVER slices through the returning Entryway!
+    // Strictly hide any corridor bay whose volume extends behind endX so corridor walls NEVER clip through the opened return doorway!
     for (let i = 0; i < corr.bays.length; i++) {
       const bay = corr.bays[i];
-      bay.group.visible = bay.frontX > endX + 0.06;
+      bay.group.visible = bay.frontX > endX + 0.08;
     }
 
     // Keep the approaching Entryway diorama PointLight gliding right behind the end door
     if (corr.dioramaLight) {
       for (let i = 0; i < this.virtualPointLights.length; i++) {
         if (this.virtualPointLights[i].light === corr.dioramaLight) {
-          this.virtualPointLights[i].worldPos.x = endX - 1.85;
+          this.virtualPointLights[i].worldPos.x = endX - 2.45;
           break;
         }
       }
     }
 
-    // Bell envelope peaking mid-corridor and easing cleanly back to 0.0 before reaching the end door!
+    // Bell envelope peaking mid-corridor and easing cleanly back to 0.0 well before reaching the end door!
     const warpEnvelope = playerOutside
-      ? Math.pow(Math.sin(THREE.MathUtils.clamp(p / 0.92, 0, 1) * Math.PI), 1.2)
+      ? Math.pow(Math.sin(THREE.MathUtils.clamp(p / 0.90, 0, 1) * Math.PI), 1.25)
       : 0;
 
     // Subtle wide-angle Fisheye radial distortion + gentle dolly-zoom FOV swell
@@ -4447,9 +4550,12 @@ export class ApartmentEngine {
     }
 
     if (fog) {
-      // Keep corridor fog airy enough so the 68m wallpaper/wainscoting/round-lamp vanishing point reads super clearly!
+      // Ease corridor fog smoothly back to apartment baseFogDensity as the player approaches the end door
       const corridorBaseFog = Math.min(this.baseFogDensity, 0.0115);
-      const targetFog = corridorBaseFog + warpEnvelope * 0.0042;
+      const targetFog =
+        p > 0.88
+          ? THREE.MathUtils.lerp(corridorBaseFog, this.baseFogDensity, (p - 0.88) / 0.12)
+          : corridorBaseFog + warpEnvelope * 0.0042;
       fog.density = THREE.MathUtils.damp(fog.density, targetFog, 5.5, dt);
     }
 
@@ -4460,8 +4566,8 @@ export class ApartmentEngine {
     const pushingEndDoor =
       this.viewMode === 'first-person' &&
       !this.isTeleporting &&
-      p > 0.94 &&
-      distToEndDoor < 1.05 &&
+      p > 0.90 &&
+      distToEndDoor < 1.18 &&
       distToEndDoor > -0.60 &&
       Math.abs(this.playerFeetPos.z - 4.60) < 0.78 &&
       (this.playerMovingThisFrame || corr.endDoorIsOpen);
@@ -4500,15 +4606,15 @@ export class ApartmentEngine {
       this.applyCameraFromPlayer();
     }
 
-    // Seamless zero-jump 180° fold back into the real Entryway right as the player walks through the pushed-open doorway!
+    // Seamless zero-jump 180° fold back into the real Entryway right as the player steps across the threshold!
     if (
       this.viewMode === 'first-person' &&
       !this.isTeleporting &&
       this.nonEuclidLoopCooldown <= 0 &&
-      corr.endDoorAngle >= 0.42 &&
-      this.playerFeetPos.x <= endX - 0.16
+      corr.endDoorAngle >= 0.34 &&
+      this.playerFeetPos.x <= endX - 0.04
     ) {
-      const intoDoor = THREE.MathUtils.clamp(endX - this.playerFeetPos.x + 0.08, 0.18, 0.46);
+      const intoDoor = THREE.MathUtils.clamp(endX - this.playerFeetPos.x + 0.04, 0.08, 0.42);
       const dzFromCenter = this.playerFeetPos.z - 4.60;
       const returnZ = THREE.MathUtils.clamp(4.60 - dzFromCenter, 4.18, 5.02);
 
@@ -4525,7 +4631,9 @@ export class ApartmentEngine {
       this.camera.updateProjectionMatrix();
       if (fog) fog.density = this.baseFogDensity;
 
-      // Reset corridor & end door cleanly for next visit
+      // Reset corridor & end door cleanly for next visit (keep corr.group hidden immediately on this frame)
+      corr.group.visible = false;
+      if (corr.dioramaLight) corr.dioramaLight.visible = false;
       corr.endGroup.position.x = START_END_X;
       corr.endDoorIsOpen = false;
       corr.endDoorAudioPlayed = false;
@@ -4542,10 +4650,22 @@ export class ApartmentEngine {
         frontDoor.wasPassingThrough = false;
         frontDoor.isBeingPushed = false;
         frontDoor.closeThudPlayed = false;
-        frontDoor.currentAngle = -0.36;
-        frontDoor.angularVel = 2.0;
+        frontDoor.currentAngle = -Math.PI * 0.44;
+        frontDoor.angularVel = 1.6;
         frontDoor.pivot.rotation.y = frontDoor.currentAngle;
       }
+
+      // Immediately pre-reveal Entryway + Dining + Kitchen and refresh shadows on this exact frame!
+      this.currentRoom = 'entryway';
+      this.ctx.sceneManager.updateVisibility(
+        'entryway',
+        this.playerFeetPos,
+        this.viewMode,
+        this.ctx.doors,
+        this.ctx.ceilingLamps
+      );
+      this.shadowDirty = true;
+      this.shadowImmediate = true;
 
       this.nonEuclidLoopCooldown = 1.25;
       this.audio.playSpaceFold();
@@ -4825,6 +4945,7 @@ export class ApartmentEngine {
     this.updateDustMotes(dt, elapsed);
     this.updateSteamWisps(dt, elapsed);
     this.updateWallClocks(elapsed);
+    this.updateTurntable(dt, elapsed);
     this.updateBasementLab(dt, elapsed);
     this.updateGlitchCat(dt, elapsed);
     this.updatePaperAirplane(dt, elapsed);
@@ -5074,13 +5195,18 @@ export class ApartmentEngine {
 
     // 3b. Manual room occlusion culling via SceneManager (visibility-only, zero scene-graph churn!)
     if (this.settings.occlusionCulling) {
-      this.ctx.sceneManager.updateVisibility(
+      const visibilityChanged = this.ctx.sceneManager.updateVisibility(
         this.isTeleporting && this.teleportTargetRoom ? this.teleportTargetRoom : this.currentRoom,
         this.isTeleporting ? this.targetFeetPos : this.playerFeetPos,
         this.viewMode,
         this.ctx.doors,
         this.ctx.ceilingLamps
       );
+      if (visibilityChanged) {
+        // Immediately refresh directional shadows on the exact frame a newly entered room appears!
+        this.shadowDirty = true;
+        this.shadowImmediate = true;
+      }
     }
 
     // 3c. Smoothly damp Living Room modern chandelier shader boost & sync Constant 6-Slot GPU PointLight Pool
@@ -5104,14 +5230,20 @@ export class ApartmentEngine {
     if (silVis !== this.lastShadowSilhouetteVis) {
       this.lastShadowSilhouetteVis = silVis;
       this.shadowDirty = true;
+      this.shadowImmediate = true;
     }
     if (this.shadowUpdateCooldown > 0) {
       this.shadowUpdateCooldown = Math.max(0, this.shadowUpdateCooldown - dt);
     }
-    if (this.shadowDirty && this.shadowUpdateCooldown <= 0 && this.renderer.shadowMap.enabled) {
+    if (
+      this.shadowDirty &&
+      (this.shadowImmediate || this.shadowUpdateCooldown <= 0) &&
+      this.renderer.shadowMap.enabled
+    ) {
       this.renderer.shadowMap.needsUpdate = true;
       this.shadowDirty = false;
-      this.shadowUpdateCooldown = 0.22;
+      this.shadowImmediate = false;
+      this.shadowUpdateCooldown = 0.16;
     }
 
     if (this.metaGlitchTimer > 0) {

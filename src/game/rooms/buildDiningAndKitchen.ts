@@ -2,11 +2,14 @@ import * as THREE from 'three';
 import {
   createBeveledBox,
   createBeveledSlab,
+  createCopperKnobGeometry,
+  createCraftedCabinetFront,
   createCurvedChairBackrestGeometry,
   createDrapedCurtainGeometry,
   createDrapedTableclothGeometry,
   createMoldedDrawerFront,
   createPlushBox,
+  createRetroPillowedSlabGeometry,
   createSplayedLegMesh,
   createTableclothLaceTrimGeometry,
   createTaperedCurveGeometry,
@@ -14,6 +17,7 @@ import {
   createTyndallShaftClusterGeometry,
 } from '../geometries';
 import {
+  createArchitecturalGlassMaterial,
   createTyndallBeamShaderMaterial,
   createWindowEmissiveMaterial,
   createWindowGoboShaderMaterial,
@@ -91,43 +95,61 @@ export function buildDiningAndKitchen(ctx: RoomBuildContext): void {
   scene.add(kitchenGroup);
   sceneManager.registerRoomGroup('kitchen', kitchenGroup);
 
-  // Clear luminous golden-honey MiSide wood furniture & cabinet materials
+  // Clear luminous golden-honey MiSide wood furniture & cabinet materials with tactile grain relief
   const oakMat = mat({
     map: textures.furnitureOak,
     bumpMap: textures.furnitureWoodBump,
-    bumpScale: 0.005,
-    color: 0xfff8ec,
-    roughness: 0.58,
+    bumpScale: 0.0072,
+    color: 0xfff5e4,
+    roughness: 0.54,
     metalness: 0.0,
-    woodLacquer: 0.52,
+    woodLacquer: 0.58,
   });
   const darkWoodMat = mat({
     map: textures.furnitureOak,
     bumpMap: textures.furnitureWoodBump,
-    bumpScale: 0.005,
-    color: 0xf2d9b6,
-    roughness: 0.62,
+    bumpScale: 0.0072,
+    color: 0xeed2aa,
+    roughness: 0.58,
     metalness: 0.0,
-    woodLacquer: 0.48,
+    woodLacquer: 0.52,
   });
-  // Clear luminous honey cabinet doors & carved molding materials
+  // Recessed Shaker center wood panel & routed bevel shadow wood materials
   const woodPanelMat = mat({
     map: textures.furnitureOak,
     bumpMap: textures.furnitureWoodBump,
-    bumpScale: 0.004,
-    color: 0xfffdf6,
-    roughness: 0.59,
+    bumpScale: 0.0064,
+    color: 0xfffaf0,
+    roughness: 0.56,
     metalness: 0.0,
-    woodLacquer: 0.50,
+    woodLacquer: 0.54,
   });
   const woodMoldingMat = mat({
     map: textures.furnitureOak,
     bumpMap: textures.furnitureWoodBump,
-    bumpScale: 0.004,
-    color: 0xf7e4c6,
-    roughness: 0.60,
+    bumpScale: 0.0065,
+    color: 0xf4dec0,
+    roughness: 0.58,
     metalness: 0.0,
-    woodLacquer: 0.50,
+    woodLacquer: 0.52,
+  });
+  const woodGrooveMat = mat({
+    map: textures.furnitureOak,
+    bumpMap: textures.furnitureWoodBump,
+    bumpScale: 0.006,
+    color: 0xd9b282,
+    roughness: 0.66,
+    metalness: 0.0,
+    woodLacquer: 0.36,
+  });
+  // Warm burnished copper-brass material for round cabinet knobs & vintage kitchen pulls (铜黄金属质感)
+  const copperBrassMat = mat({
+    color: 0xd99a48,
+    roughness: 0.22,
+    metalness: 0.88,
+    envMapIntensity: 1.38,
+    celStrength: 0.34,
+    rimScale: 1.32,
   });
   const applianceCreamMat = mat({ color: 0xfff8f2, roughness: 0.90, metalness: 0.0 });
   const applianceTrimMat = mat({ color: 0xf4e8de, roughness: 0.90, metalness: 0.0 });
@@ -151,37 +173,45 @@ export function buildDiningAndKitchen(ctx: RoomBuildContext): void {
   });
   const darkIronMat = mat({ color: 0x292436, roughness: 0.36, metalness: 0.68 });
   const counterTopMat = mat({ color: 0xf4eff8, roughness: 0.24, metalness: 0.06 });
-  // Warm creamy off-white (米白色) enamel refrigerator material
+  // Warm creamy ivory-yellow (米白色偏黄) glossy vintage enamel refrigerator material
   const fridgeMat = mat({
-    color: 0xf5efe4,
-    roughness: 0.26,
+    color: 0xf6e6c0,
+    roughness: 0.19,
+    metalness: 0.05,
+    envMapIntensity: 1.28,
+    rimScale: 1.34,
+    celStrength: 0.56,
+  });
+  const fridgeTrimMat = mat({
+    color: 0xe9d5a8,
+    roughness: 0.30,
     metalness: 0.06,
-    rimScale: 1.25,
+    celStrength: 0.52,
+  });
+  const retroChromeMat = mat({
+    color: 0xf0f4fc,
+    roughness: 0.13,
+    metalness: 0.92,
+    envMapIntensity: 1.5,
+    celStrength: 0.28,
+    rimScale: 1.45,
   });
   const cavityDarkMat = mat({
-    color: 0x382428,
-    roughness: 0.86,
-    metalness: 0.02,
-    woodLacquer: 0.35,
+    map: textures.furnitureOak,
+    bumpMap: textures.furnitureWoodBump,
+    bumpScale: 0.005,
+    color: 0x8a6448,
+    roughness: 0.78,
+    metalness: 0.0,
+    woodLacquer: 0.28,
   });
-  const cabinetGlassMat = new THREE.MeshStandardMaterial({
-    color: 0xdcf2ff,
-    roughness: 0.06,
-    metalness: 0.12,
-    transparent: true,
-    opacity: 0.24,
-    depthWrite: false,
-    polygonOffset: true,
-    polygonOffsetFactor: -1,
-    polygonOffsetUnits: -2,
-    side: THREE.DoubleSide,
-  });
-  const glassSheenMat = new THREE.MeshBasicMaterial({
-    color: 0xffffff,
-    transparent: true,
-    opacity: 0.16,
-    depthWrite: false,
-    side: THREE.DoubleSide,
+  // High-fidelity optical Fresnel & beveled architectural cabinet glass (replaces cheap painted white stripes!)
+  const cabinetGlassMat = createArchitecturalGlassMaterial(uniforms, {
+    tintHex: 0xebf6f4,
+    edgeTintHex: 0x7ab4aa,
+    baseOpacity: 0.06,
+    maxFresnelOpacity: 0.44,
+    bevelWidth: 0.044,
   });
   // Light-green linen tablecloth with red & dark-green small floral vine pattern + scalloped ivory lace hem
   const tableclothMat = mat({
@@ -201,12 +231,12 @@ export function buildDiningAndKitchen(ctx: RoomBuildContext): void {
     alphaTest: 0.42,
     side: THREE.DoubleSide,
   });
-  // Deep dark ink-green (墨绿色) plush fabric for dining chair cushions
+  // Moss green (青苔绿) plush fabric for dining chair cushions
   const grassGreenCushionMat = mat({
     map: textures.plushFabric,
     bumpMap: textures.plushBump,
     bumpScale: 0.008,
-    color: 0x1d4d35,
+    color: 0x647d43,
     roughness: 0.86,
     metalness: 0.0,
   });
@@ -613,25 +643,20 @@ export function buildDiningAndKitchen(ctx: RoomBuildContext): void {
   const chairFramesInst = new THREE.InstancedMesh(chairFrameGeo, oakMat, 4);
   chairFramesInst.castShadow = true;
   chairFramesInst.receiveShadow = true;
-  chairFramesInst.userData.dynamic = true;
 
   const chairCushionsInst = new THREE.InstancedMesh(chairSeatGeo, grassGreenCushionMat, 4);
   chairCushionsInst.castShadow = true;
   chairCushionsInst.receiveShadow = true;
-  chairCushionsInst.userData.dynamic = true;
 
   const chairBackRailsInst = new THREE.InstancedMesh(chairBackGeo, oakMat, 4);
   chairBackRailsInst.castShadow = true;
   chairBackRailsInst.receiveShadow = true;
-  chairBackRailsInst.userData.dynamic = true;
 
   const chairSpindlesInst = new THREE.InstancedMesh(chairSpindleGeo, oakMat, 20);
   chairSpindlesInst.castShadow = true;
-  chairSpindlesInst.userData.dynamic = true;
 
   const chairLegsInst = new THREE.InstancedMesh(chairLegGeo, oakMat, 16);
   chairLegsInst.castShadow = true;
-  chairLegsInst.userData.dynamic = true;
 
   const chairOffsets: [number, number, number][] = [
     [-0.46 * DINING_TABLE_SCALE, -0.72 * DINING_TABLE_SCALE, 0],
@@ -1378,9 +1403,9 @@ export function buildDiningAndKitchen(ctx: RoomBuildContext): void {
   // =========================================================================
   // 5. KITCHEN (X: +3.18 .. +7.35, Z: +0.25 .. +6.74)
   // =========================================================================
-  // Pass-through Breakfast Counter Bar Top with Bullnose Bevel + 2 Instanced Barstools
+  // Pass-through Breakfast Counter Bar Top with Bullnose Bevel + Crafted Honey-Oak Shaker Paneling
   const barTop = new THREE.Mesh(
-    createBeveledSlab(0.48, 0.034, 2.76, 0.030, 0.008),
+    createBeveledSlab(0.48, 0.036, 2.78, 0.028, 0.008),
     counterTopMat
   );
   barTop.position.set(3.18, 1.034, 5.25);
@@ -1388,6 +1413,42 @@ export function buildDiningAndKitchen(ctx: RoomBuildContext): void {
   barTop.receiveShadow = true;
   outlines.addOutline(barTop, 1.014);
   kitchenGroup.add(barTop);
+
+  // Under-counter honey-oak apron & recessed Shaker wood paneling on both sides of the breakfast bar
+  const barUnderTrim = new THREE.Mesh(
+    createBeveledBox(0.24, 0.038, 2.74, 0.005, 2),
+    oakMat
+  );
+  barUnderTrim.position.set(3.18, 0.996, 5.25);
+  kitchenGroup.add(barUnderTrim);
+
+  for (const [bSide, bX] of [
+    [-1, 3.084],
+    [1, 3.276],
+  ] as const) {
+    for (const pz of [4.36, 5.25, 6.14]) {
+      const barPanel = createCraftedCabinetFront({
+        width: 0.84,
+        height: 0.78,
+        depth: 0.020,
+        facingAxis: 'x',
+        facingSign: bSide,
+        frameMat: oakMat,
+        panelMat: woodPanelMat,
+        grooveMat: woodGrooveMat,
+        handleKind: 'none',
+        stileWidth: 0.056,
+      });
+      barPanel.position.set(bX, 0.54, pz);
+      kitchenGroup.add(barPanel);
+    }
+    const barPlinth = new THREE.Mesh(
+      createBeveledBox(0.022, 0.09, 2.74, 0.004, 1),
+      darkWoodMat
+    );
+    barPlinth.position.set(bX, 0.045, 5.25);
+    kitchenGroup.add(barPlinth);
+  }
 
   // 2 Refined British Heritage Bar Stools with Round Red-&-Green Union-Jack Velvet Cushions & Round Velvet Backrests
   const brassStoolMat = mat({
@@ -1866,46 +1927,98 @@ export function buildDiningAndKitchen(ctx: RoomBuildContext): void {
 
   kitchenGroup.add(builtInOvenGroup);
 
-  // Remaining East Cabinet Doors (Z = 4.68 beside oven & Z = 5.32 under sink)
-  const eastDoorZs = [4.68, 5.32];
-  for (let i = 0; i < eastDoorZs.length; i++) {
-    const dz = eastDoorZs[i];
-    const isUnderSink = i === 1;
-    const doorW = isUnderSink ? 0.60 : 0.56;
-    const hingeSide: -1 | 1 = i % 2 === 0 ? -1 : 1;
-    registerCabinetDoor({
-      id: `kit_cab_east_${i}`,
-      label: isUnderSink ? '水槽下方橱柜门' : '烤箱旁橱柜门',
-      room: 'kitchen',
-      parent: kitchenGroup,
-      centerX: 6.54,
-      centerY: 0.38,
-      centerZ: dz,
-      width: doorW,
-      height: 0.54,
-      thickness: 0.028,
+  // Crisp architectural vertical face-frame stiles & under-counter wood rail on East lower cabinetry
+  for (const stileZ of [3.57, 4.38, 4.99, 5.65]) {
+    const faceStile = new THREE.Mesh(
+      createBeveledBox(0.024, 0.818, 0.026, 0.003, 1),
+      darkWoodMat
+    );
+    faceStile.position.set(6.548, 0.489, stileZ);
+    kitchenGroup.add(faceStile);
+  }
+  const eastTopRail = new THREE.Mesh(
+    createBeveledBox(0.026, 0.028, 3.08, 0.003, 1),
+    oakMat
+  );
+  eastTopRail.position.set(6.548, 0.884, 5.10);
+  kitchenGroup.add(eastTopRail);
+
+  // Remaining East Cabinet Doors (Z = 4.685 beside oven & Z = 5.32 under sink) with recessed Shaker joinery & arched pulls
+  const eastDoorSpecs: { z: number; width: number; isUnderSink: boolean; hingeSide: -1 | 1 }[] = [
+    { z: 4.685, width: 0.584, isUnderSink: false, hingeSide: -1 },
+    { z: 5.32, width: 0.630, isUnderSink: true, hingeSide: 1 },
+  ];
+  for (let i = 0; i < eastDoorSpecs.length; i++) {
+    const spec = eastDoorSpecs[i];
+    const customLeaf = createCraftedCabinetFront({
+      width: spec.width,
+      height: spec.isUnderSink ? 0.58 : 0.56,
+      depth: 0.026,
       facingAxis: 'x',
       facingSign: -1,
-      hingeSide,
-      openSign: hingeSide,
-      doorMat: isUnderSink ? oakMat : woodPanelMat,
-      moldingMat: isUnderSink ? darkWoodMat : woodMoldingMat,
-      handleMat: steelMat,
+      frameMat: oakMat,
+      panelMat: woodPanelMat,
+      grooveMat: woodGrooveMat,
+      handleMat: copperBrassMat,
+      handleKind: 'arch_v',
+      handleAlign: (-spec.hingeSide) as -1 | 1,
+      handleYOffset: 0.08,
+      stileWidth: 0.048,
+    });
+    registerCabinetDoor({
+      id: `kit_cab_east_${i}`,
+      label: spec.isUnderSink ? '水槽下方橱柜门' : '烤箱旁橱柜门',
+      room: 'kitchen',
+      parent: kitchenGroup,
+      centerX: 6.537,
+      centerY: spec.isUnderSink ? 0.37 : 0.365,
+      centerZ: spec.z,
+      width: spec.width,
+      height: spec.isUnderSink ? 0.58 : 0.56,
+      thickness: 0.026,
+      facingAxis: 'x',
+      facingSign: -1,
+      hingeSide: spec.hingeSide,
+      openSign: spec.hingeSide,
+      doorMat: oakMat,
+      moldingMat: woodMoldingMat,
+      handleMat: copperBrassMat,
+      customDoorGroup: customLeaf,
     });
 
-    if (!isUnderSink) {
-      const drawer = createMoldedDrawerFront(
-        doorW,
-        0.16,
-        0.028,
-        'x',
-        woodPanelMat,
-        woodMoldingMat,
-        steelMat,
-        -1
-      );
-      drawer.position.set(6.54, 0.77, dz);
+    if (!spec.isUnderSink) {
+      const drawer = createCraftedCabinetFront({
+        width: spec.width,
+        height: 0.194,
+        depth: 0.026,
+        facingAxis: 'x',
+        facingSign: -1,
+        frameMat: oakMat,
+        panelMat: woodPanelMat,
+        grooveMat: woodGrooveMat,
+        handleMat: copperBrassMat,
+        handleKind: 'arch_h',
+        handleAlign: 0,
+        stileWidth: 0.036,
+      });
+      drawer.position.set(6.537, 0.762, spec.z);
       kitchenGroup.add(drawer);
+    } else {
+      // Decorative false apron panel directly in front of the sunken metal sink basin
+      const sinkApron = createCraftedCabinetFront({
+        width: spec.width,
+        height: 0.175,
+        depth: 0.024,
+        facingAxis: 'x',
+        facingSign: -1,
+        frameMat: oakMat,
+        panelMat: woodMoldingMat,
+        grooveMat: woodGrooveMat,
+        handleKind: 'none',
+        stileWidth: 0.034,
+      });
+      sinkApron.position.set(6.538, 0.768, spec.z);
+      kitchenGroup.add(sinkApron);
     }
   }
 
@@ -1963,42 +2076,78 @@ export function buildDiningAndKitchen(ctx: RoomBuildContext): void {
   toeSouth.position.set(5.20, 0.04, 6.32);
   kitchenGroup.add(toeSouth);
 
-  // Color-Blocked White Drawers & Interactive Molded Doors along South cabinet front (-Z face)
-  const southDoorXs = [4.10, 4.85, 5.60];
+  // Architectural face-frame stiles & top rail along South lower cabinet (-Z face)
+  for (const stileX of [3.70, 4.46, 5.22, 5.98]) {
+    const sStile = new THREE.Mesh(
+      createBeveledBox(0.026, 0.818, 0.024, 0.003, 1),
+      darkWoodMat
+    );
+    sStile.position.set(stileX, 0.489, 5.928);
+    kitchenGroup.add(sStile);
+  }
+  const southTopRail = new THREE.Mesh(
+    createBeveledBox(3.38, 0.028, 0.026, 0.003, 1),
+    oakMat
+  );
+  southTopRail.position.set(5.20, 0.884, 5.928);
+  kitchenGroup.add(southTopRail);
+
+  // Strictly aligned Recessed Shaker Oak Doors & Drawers with sculpted arched pulls along South cabinet front (-Z face)
+  const southDoorXs = [4.08, 4.84, 5.60];
   for (let i = 0; i < southDoorXs.length; i++) {
     const dx = southDoorXs[i];
     const hingeSide: -1 | 1 = i < 2 ? -1 : 1;
+    const southLeaf = createCraftedCabinetFront({
+      width: 0.728,
+      height: 0.56,
+      depth: 0.026,
+      facingAxis: 'z',
+      facingSign: -1,
+      frameMat: oakMat,
+      panelMat: woodPanelMat,
+      grooveMat: woodGrooveMat,
+      handleMat: copperBrassMat,
+      handleKind: 'arch_v',
+      handleAlign: (-hingeSide) as -1 | 1,
+      handleYOffset: 0.08,
+      stileWidth: 0.050,
+    });
     registerCabinetDoor({
       id: `kit_cab_south_${i}`,
       label: `厨房南侧下层橱柜门 (${i + 1})`,
       room: 'kitchen',
       parent: kitchenGroup,
       centerX: dx,
-      centerY: 0.38,
-      centerZ: 5.92,
-      width: 0.68,
-      height: 0.54,
-      thickness: 0.028,
+      centerY: 0.365,
+      centerZ: 5.917,
+      width: 0.728,
+      height: 0.56,
+      thickness: 0.026,
       facingAxis: 'z',
       facingSign: -1,
       hingeSide,
       openSign: (-hingeSide) as -1 | 1,
-      doorMat: i === 1 ? woodPanelMat : oakMat,
-      moldingMat: i === 1 ? woodMoldingMat : darkWoodMat,
-      handleMat: steelMat,
+      doorMat: oakMat,
+      moldingMat: woodMoldingMat,
+      handleMat: copperBrassMat,
+      customDoorGroup: southLeaf,
     });
 
-    const drawer = createMoldedDrawerFront(
-      0.68,
-      0.16,
-      0.028,
-      'z',
-      woodPanelMat,
-      woodMoldingMat,
-      steelMat,
-      -1
-    );
-    drawer.position.set(dx, 0.77, 5.92);
+    const drawer = createCraftedCabinetFront({
+      width: 0.728,
+      height: 0.194,
+      depth: 0.026,
+      facingAxis: 'z',
+      facingSign: -1,
+      frameMat: oakMat,
+      panelMat: woodPanelMat,
+      grooveMat: woodGrooveMat,
+      handleMat: copperBrassMat,
+      handleKind: 'arch_h',
+      handleAlign: 0,
+      stileWidth: 0.036,
+    });
+    drawer.position.set(dx, 0.762, 5.917);
     kitchenGroup.add(drawer);
   }
 
@@ -2103,88 +2252,116 @@ export function buildDiningAndKitchen(ctx: RoomBuildContext): void {
   underCabLed.position.set(6.88, 1.875, 5.92);
   kitchenGroup.add(underCabLed);
 
-  // Helper to build a framed glass cabinet door (wooden rails/stiles + crystal-clear glass pane + specular reflection streak)
-  const buildFramedGlassDoor = (doorW: number, doorH: number, doorThick: number, handleSide: -1 | 1) => {
+  // Helper to build a strictly edge-aligned framed glass cabinet door with:
+  // - Crisp beveled honey-oak stiles & rails + recessed dark-wood inner glazing rabbet bead
+  // - Optical Fresnel beveled tempered glass pane (NO cheap white reflection strips!)
+  // - Turned burnished copper-brass round knob (铜黄圆形把手)
+  const buildFramedGlassDoor = (
+    doorW: number,
+    doorH: number,
+    doorThick: number,
+    handleSide: -1 | 1,
+    knobYOffset = -0.08
+  ) => {
     const dg = new THREE.Group();
-    const stileW = 0.052;
+    const stileW = 0.054;
     const innerW = doorW - stileW * 2;
     const innerH = doorH - stileW * 2;
-    // Left & right vertical wooden stiles
+
+    // 1. Full-height left & right vertical wooden stiles (strict outer edges at ±doorW/2)
     for (const sz of [-doorW / 2 + stileW / 2, doorW / 2 - stileW / 2]) {
       const stile = new THREE.Mesh(
-        createBeveledBox(doorThick, doorH, stileW, 0.005, 2),
+        createBeveledBox(doorThick, doorH, stileW, 0.0035, 2),
         oakMat
       );
       stile.position.z = sz;
       stile.castShadow = true;
+      stile.receiveShadow = true;
       dg.add(stile);
     }
-    // Top & bottom horizontal wooden rails
+    // 2. Top & bottom horizontal wooden rails fitted flush between the stiles (strict outer edges at ±doorH/2)
     for (const sy of [-doorH / 2 + stileW / 2, doorH / 2 - stileW / 2]) {
       const rail = new THREE.Mesh(
-        createBeveledBox(doorThick, stileW, innerW + 0.006, 0.005, 2),
+        createBeveledBox(doorThick, stileW, innerW + 0.002, 0.0035, 2),
         oakMat
       );
       rail.position.y = sy;
       rail.castShadow = true;
+      rail.receiveShadow = true;
       dg.add(rail);
     }
-    // Crystal-clear transparent glass pane recessed cleanly inside the wooden frame (zero Z-fighting!)
+
+    // 3. Stepped inner wooden glazing rabbet bead (gives real cabinet glass framing depth!)
+    const beadW = 0.011;
+    const beadD = doorThick - 0.008;
+    for (const sz of [-innerW / 2 + beadW / 2, innerW / 2 - beadW / 2]) {
+      const vBead = new THREE.Mesh(
+        createBeveledBox(beadD, innerH, beadW, 0.0018, 1),
+        woodGrooveMat
+      );
+      vBead.position.z = sz;
+      dg.add(vBead);
+    }
+    for (const sy of [-innerH / 2 + beadW / 2, innerH / 2 - beadW / 2]) {
+      const hBead = new THREE.Mesh(
+        createBeveledBox(beadD, beadW, innerW - beadW * 1.6, 0.0018, 1),
+        woodGrooveMat
+      );
+      hBead.position.y = sy;
+      dg.add(hBead);
+    }
+
+    // 4. Optical Fresnel + beveled-edge architectural glass pane recessed cleanly inside the rabbet
     const glassPane = new THREE.Mesh(
-      new THREE.PlaneGeometry(innerW - 0.004, innerH - 0.004),
+      new THREE.PlaneGeometry(innerW - beadW * 1.6 + 0.004, innerH - beadW * 1.6 + 0.004),
       cabinetGlassMat
     );
     glassPane.rotation.y = -Math.PI / 2;
-    glassPane.position.x = -0.002;
+    glassPane.position.x = -0.0015;
+    glassPane.castShadow = false;
+    glassPane.receiveShadow = false;
     glassPane.renderOrder = 2;
     glassPane.userData.dynamic = true;
     dg.add(glassPane);
 
-    // Subtle anime-style diagonal glass specular highlight streak on outer glass face
-    const sheenStrip = new THREE.Mesh(
-      new THREE.PlaneGeometry(innerW * 0.18, innerH * 0.78),
-      glassSheenMat
+    // 5. Turned burnished copper-brass round knob (铜黄圆形把手) centered on latch stile
+    const knob = new THREE.Mesh(createCopperKnobGeometry(1.0), copperBrassMat);
+    knob.rotation.z = Math.PI / 2; // Point outward along -X
+    knob.position.set(
+      -doorThick / 2,
+      knobYOffset,
+      handleSide * (doorW / 2 - stileW * 0.5)
     );
-    sheenStrip.rotation.y = -Math.PI / 2;
-    sheenStrip.rotation.x = 0.28;
-    sheenStrip.position.set(-0.005, 0.02, -innerW * 0.14);
-    sheenStrip.renderOrder = 3;
-    sheenStrip.userData.dynamic = true;
-    dg.add(sheenStrip);
-
-    // Brushed steel vertical handle pull
-    const pull = new THREE.Mesh(
-      createBeveledBox(0.014, 0.11, 0.014, 0.003, 2),
-      steelMat
-    );
-    pull.position.set(-doorThick / 2 - 0.010, -0.08, handleSide * (doorW * 0.38));
-    dg.add(pull);
+    knob.castShadow = true;
+    dg.add(knob);
     return dg;
   };
 
-  const upperDoorZs = [5.60, 6.24];
+  // Upper 2-Door Wall Cabinet: carcass spans Z = 5.26 .. 6.58 (1.320m) and Y = 1.880 .. 2.620 (0.740m), front X = 6.820
+  // Doors strictly align flush edge-to-edge with 4mm center meeting seam!
+  const upperDoorZs = [5.589, 6.251];
   for (let i = 0; i < upperDoorZs.length; i++) {
     const uz = upperDoorZs[i];
     const hingeSide: -1 | 1 = i === 0 ? -1 : 1;
-    const glassDoorGroup = buildFramedGlassDoor(0.61, 0.66, 0.026, (-hingeSide) as -1 | 1);
+    const glassDoorGroup = buildFramedGlassDoor(0.658, 0.740, 0.026, (-hingeSide) as -1 | 1, -0.14);
     registerCabinetDoor({
       id: `kit_cupboard_upper_${i}`,
       label: `厨房玻璃吊柜门 (${i + 1})`,
       room: 'kitchen',
       parent: kitchenGroup,
-      centerX: 6.81,
-      centerY: 2.25,
+      centerX: 6.807,
+      centerY: 2.250,
       centerZ: uz,
-      width: 0.61,
-      height: 0.66,
+      width: 0.658,
+      height: 0.740,
       thickness: 0.026,
       facingAxis: 'x',
       facingSign: -1,
       hingeSide,
       openSign: hingeSide,
       doorMat: oakMat,
-      moldingMat: darkWoodMat,
-      handleMat: steelMat,
+      moldingMat: woodMoldingMat,
+      handleMat: copperBrassMat,
       customDoorGroup: glassDoorGroup,
       addRecessedCavity: false,
     });
@@ -3300,106 +3477,191 @@ export function buildDiningAndKitchen(ctx: RoomBuildContext): void {
   kitchenGroup.add(mwGroup);
 
   // =========================================================================
-  // 6. CREAMY OFF-WHITE REFRIGERATOR AT KITCHEN ENTRANCE WALL (X = 3.86, Z = 0.78)
-  //    (挪到厨房入口靠北墙位置，正面朝向+Z南侧室内，颜色米白色，去掉顶部吊柜)
+  // 6. RETRO ROUNDED CREAMY-YELLOW REFRIGERATOR AT KITCHEN ENTRANCE WALL (X = 3.86, Z = 0.78)
+  //    (米白色偏黄复古圆润造型: 大圆角弧面门体 + 镀铬复古弯弧把手 + 复古金属徽章 + 底部镀铬短脚)
   // =========================================================================
   const fridge = new THREE.Group();
-  // In local coords: front doors/handles/note are on -X, carcass back is on +X.
-  // Setting rotation.y = +Math.PI / 2 rotates local -X to world +Z (South, facing into the kitchen!)
-  // and places local +X flush against the North wall (Z = 0.34).
+  // Local -X rotates to world +Z (South, facing into kitchen); local +X sits flush near North wall.
   fridge.position.set(3.86, 0, 0.78);
   fridge.rotation.y = Math.PI / 2;
 
-  // Main rounded-edge creamy off-white carcass
+  // 1) 4 Sculpted Retro Chrome Stub Feet + Recessed Dark Lower Ventilation Kick-Grille
+  for (const [fx, fz] of [
+    [-0.24, -0.30],
+    [0.26, -0.30],
+    [-0.24, 0.30],
+    [0.26, 0.30],
+  ] as const) {
+    const legUpper = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.028, 0.022, 0.056, 16),
+      retroChromeMat
+    );
+    legUpper.position.set(fx, 0.032, fz);
+    legUpper.castShadow = true;
+    fridge.add(legUpper);
+
+    const rubberPad = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.024, 0.026, 0.010, 14),
+      darkIronMat
+    );
+    rubberPad.position.set(fx, 0.005, fz);
+    fridge.add(rubberPad);
+  }
+
+  const ventBase = new THREE.Mesh(
+    createBeveledBox(0.58, 0.052, 0.66, 0.012, 2),
+    darkIronMat
+  );
+  ventBase.position.set(0.01, 0.068, 0);
+  fridge.add(ventBase);
+
+  // 2) Generously Rounded Pillowy Vintage Carcass with Softly Domed Retro Roof
   const fCarcass = new THREE.Mesh(
-    createBeveledBox(0.72, 1.92, 0.84, 0.036, 3),
+    createRetroPillowedSlabGeometry(0.68, 1.86, 0.82, 0.115, 0.014, -1, 0.016),
     fridgeMat
   );
-  fCarcass.position.set(0.03, 0.96, 0);
+  fCarcass.position.set(0.04, 1.00, 0);
   fCarcass.castShadow = true;
   fCarcass.receiveShadow = true;
-  outlines.addOutline(fCarcass, 1.018);
+  outlines.addOutline(fCarcass, 1.016);
   fridge.add(fCarcass);
 
-  // Subtle brushed-steel top hinge cover plate on top of fridge (since top cabinet is removed)
-  const fridgeTopCap = new THREE.Mesh(
-    createBeveledBox(0.66, 0.024, 0.78, 0.008, 2),
-     fridgeMat
+  // Subtle horizontal recessed chrome beltline accent band between upper freezer & lower fridge
+  const fridgeBeltTrim = new THREE.Mesh(
+    createBeveledBox(0.020, 0.018, 0.77, 0.006, 2),
+    fridgeTrimMat
   );
-  fridgeTopCap.position.set(0.02, 1.93, 0);
-  fridge.add(fridgeTopCap);
+  fridgeBeltTrim.position.set(-0.302, 1.335, 0);
+  fridge.add(fridgeBeltTrim);
 
-  // Dark magnetic door gasket seal recessed behind doors
-  const fridgeGasketMat = mat({ color: 0x383242, roughness: 0.75 });
+  // 3) Dark Magnetic Rubber Door Gaskets tucked tightly behind both doors
+  const fridgeGasketMat = mat({ color: 0x3b353e, roughness: 0.78 });
   const topGasket = new THREE.Mesh(
-    new THREE.BoxGeometry(0.020, 0.54, 0.79),
+    createBeveledBox(0.026, 0.51, 0.76, 0.038, 3),
     fridgeGasketMat
   );
-  topGasket.position.set(-0.328, 1.62, 0);
+  topGasket.position.set(-0.296, 1.625, 0);
   fridge.add(topGasket);
 
   const botGasket = new THREE.Mesh(
-    new THREE.BoxGeometry(0.020, 1.25, 0.79),
+    createBeveledBox(0.026, 1.20, 0.76, 0.038, 3),
     fridgeGasketMat
   );
-  botGasket.position.set(-0.328, 0.67, 0);
+  botGasket.position.set(-0.296, 0.715, 0);
   fridge.add(botGasket);
 
-  // Separate crisp Upper Freezer Door & Lower Fridge Door on front face (local -X -> world +Z South)
+  // 4) Softly Cambered Pillowy Upper Freezer Door & Lower Fridge Door (圆润弧面复古门板)
   const topDoor = new THREE.Mesh(
-    createBeveledBox(0.052, 0.56, 0.82, 0.014, 3),
+    createRetroPillowedSlabGeometry(0.066, 0.54, 0.80, 0.056, 0.024, -1, 0.006),
     fridgeMat
   );
-  topDoor.position.set(-0.354, 1.62, 0);
+  topDoor.position.set(-0.332, 1.625, 0);
   topDoor.castShadow = true;
+  topDoor.receiveShadow = true;
   fridge.add(topDoor);
 
   const botDoor = new THREE.Mesh(
-    createBeveledBox(0.052, 1.28, 0.82, 0.014, 3),
+    createRetroPillowedSlabGeometry(0.066, 1.24, 0.80, 0.056, 0.026, -1, 0.004),
     fridgeMat
   );
-  botDoor.position.set(-0.354, 0.67, 0);
+  botDoor.position.set(-0.332, 0.715, 0);
   botDoor.castShadow = true;
+  botDoor.receiveShadow = true;
   fridge.add(botDoor);
 
-  // Sleek tubular brushed-steel handles on the right-hand (+X East / local +Z) edge when facing the fridge
-  const handleBarStandoffGeo = new THREE.CylinderGeometry(0.008, 0.008, 0.032, 8);
-  handleBarStandoffGeo.rotateZ(Math.PI / 2);
-  for (const [hy, hh] of [
-    [1.6, 0.34],
-    [0.98, 0.44],
-  ]) {
-    const hBar = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.010, 0.010, hh, 10),
-      steelMat
+  // Subtle retro chrome barrel hinges on the left edge (local -Z)
+  for (const hy of [1.84, 1.35, 0.16]) {
+    const hingePin = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.011, 0.011, 0.044, 12),
+      retroChromeMat
     );
-    hBar.position.set(-0.412, hy, 0.32);
-    fridge.add(hBar);
-
-    for (const dy of [-hh * 0.42, hh * 0.42]) {
-      const standoff = new THREE.Mesh(handleBarStandoffGeo, steelMat);
-      standoff.position.set(-0.394, hy + dy, 0.32);
-      fridge.add(standoff);
-    }
+    hingePin.position.set(-0.312, hy, -0.398);
+    fridge.add(hingePin);
   }
 
-  // Warning sticky note + decorative red magnet button on upper door
+  // 5) Sculpted Vintage Curved Chrome Retro Handles with Teardrop Mounting Escutcheons
+  const buildRetroFridgeHandle = (centerY: number, span: number) => {
+    const hg = new THREE.Group();
+    hg.position.set(-0.365, centerY, 0.295);
+
+    const hs = span * 0.5;
+    const handleCurve = new THREE.CatmullRomCurve3([
+      new THREE.Vector3(0.008, -hs, 0),
+      new THREE.Vector3(-0.036, -hs * 0.82, 0),
+      new THREE.Vector3(-0.048, -hs * 0.32, 0),
+      new THREE.Vector3(-0.050, 0, 0),
+      new THREE.Vector3(-0.048, hs * 0.32, 0),
+      new THREE.Vector3(-0.036, hs * 0.82, 0),
+      new THREE.Vector3(0.008, hs, 0),
+    ]);
+    const barMesh = new THREE.Mesh(
+      new THREE.TubeGeometry(handleCurve, 26, 0.0115, 12, false),
+      retroChromeMat
+    );
+    barMesh.castShadow = true;
+    hg.add(barMesh);
+
+    // Flared vintage chrome mounting bezels at top & bottom of each handle
+    for (const sy of [-hs, hs]) {
+      const bezel = new THREE.Mesh(
+        createBeveledBox(0.020, 0.046, 0.030, 0.008, 2),
+        retroChromeMat
+      );
+      bezel.position.set(0.002, sy, 0);
+      hg.add(bezel);
+    }
+    return hg;
+  };
+  fridge.add(buildRetroFridgeHandle(1.60, 0.25));
+  fridge.add(buildRetroFridgeHandle(1.04, 0.36));
+
+  // 6) Classic Embossed Retro Chrome Script Badge Emblem centered on upper freezer door
+  const badgeBar = new THREE.Mesh(
+    createBeveledBox(0.012, 0.024, 0.165, 0.006, 2),
+    retroChromeMat
+  );
+  badgeBar.position.set(-0.386, 1.775, 0);
+  fridge.add(badgeBar);
+  for (const bz of [-0.10, 0.10]) {
+    const badgeDot = new THREE.Mesh(
+      new THREE.SphereGeometry(0.0075, 10, 8),
+      retroChromeMat
+    );
+    badgeDot.position.set(-0.386, 1.775, bz);
+    fridge.add(badgeDot);
+  }
+
+  // 7) Warning sticky note + decorative pastel retro magnets resting cleanly on cambered front face
   const note = new THREE.Mesh(
-    new THREE.PlaneGeometry(0.18, 0.18),
+    new THREE.PlaneGeometry(0.175, 0.175),
     mat({ map: textures.stickyNote, roughness: 0.85 })
   );
   note.rotation.y = -Math.PI / 2;
-  note.rotation.x = 0.05;
-  note.position.set(-0.383, 1.54, -0.06);
+  note.rotation.x = 0.04;
+  note.position.set(-0.391, 1.54, -0.07);
   fridge.add(note);
 
   const magnet = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.018, 0.018, 0.012, 12),
-    mat({ color: 0xd94558, roughness: 0.35 })
+    new THREE.CylinderGeometry(0.017, 0.017, 0.011, 14),
+    mat({ color: 0xd94558, roughness: 0.32 })
   );
   magnet.rotation.z = Math.PI / 2;
-  magnet.position.set(-0.385, 1.61, -0.06);
+  magnet.position.set(-0.394, 1.608, -0.07);
   fridge.add(magnet);
+
+  // Two subtle pastel decorative fridge magnets on lower door
+  for (const [my, mz, mcol] of [
+    [1.14, -0.18, 0x76b88a],
+    [1.06, -0.09, 0xf2bc57],
+  ] as const) {
+    const decoMag = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.015, 0.015, 0.010, 14),
+      mat({ color: mcol, roughness: 0.34 })
+    );
+    decoMag.rotation.z = Math.PI / 2;
+    decoMag.position.set(-0.392, my, mz);
+    fridge.add(decoMag);
+  }
 
   kitchenGroup.add(fridge);
   addBoxCollider('col_fridge', 3.86, 0.98, 0.78, 0.88, 1.96, 0.80);
@@ -3411,165 +3673,327 @@ export function buildDiningAndKitchen(ctx: RoomBuildContext): void {
   }));
 
   // =========================================================================
-  // 6B. REPOSITIONED & ADAPTED GLASS-FRONT KITCHEN DISH HUTCH (X = 6.84, Z = 2.58)
-  //     (适配原冰箱空出后的东墙位置，宽敞双门玻璃餐具柜与灶台自然衔接!)
+  // 6B. HIGH-CRAFT GLASS-FRONT KITCHEN DISH HUTCH (X = 6.84, Z = 2.58)
+  //     严格边对边对齐柜门 + 铜黄圆形拉手 + 物理菲涅尔磨边玻璃 + 精细实木榫卯造型
   // =========================================================================
   const hutchGroup = new THREE.Group();
   hutchGroup.position.set(6.84, 0, 2.58);
 
-  // Lower solid-oak base cabinet (Y = 0 .. 0.92, Z span = 1.36m from 1.90 to 3.26)
+  // 1) Recessed Dark-Oak Plinth Base (Y = 0 .. 0.06) + Lower Solid-Oak Carcass (Y = 0.06 .. 0.88, Z = -0.68..+0.68)
+  const hutchPlinth = new THREE.Mesh(
+    createBeveledBox(0.56, 0.06, 1.32, 0.004, 1),
+    darkWoodMat
+  );
+  hutchPlinth.position.set(0.025, 0.03, 0);
+  hutchPlinth.receiveShadow = true;
+  hutchGroup.add(hutchPlinth);
+
   const hutchBase = new THREE.Mesh(
-    createBeveledBox(0.62, 0.88, 1.36, 0.012, 2),
+    createBeveledBox(0.62, 0.82, 1.36, 0.008, 2),
     oakMat
   );
-  hutchBase.position.y = 0.44;
+  hutchBase.position.y = 0.47;
   hutchBase.castShadow = true;
   hutchBase.receiveShadow = true;
   hutchGroup.add(hutchBase);
 
+  // Subtle Shaker recessed side-panel molding on exposed North/South flanks of lower carcass
+  for (const sSide of [-1, 1] as const) {
+    const baseSideMolding = createCraftedCabinetFront({
+      width: 0.56,
+      height: 0.76,
+      depth: 0.016,
+      facingAxis: 'z',
+      facingSign: sSide,
+      frameMat: oakMat,
+      panelMat: woodPanelMat,
+      grooveMat: woodGrooveMat,
+      handleKind: 'none',
+      stileWidth: 0.044,
+    });
+    baseSideMolding.position.set(0, 0.47, sSide * 0.680);
+    hutchGroup.add(baseSideMolding);
+  }
+
+  // Lower countertop ledge with double-stepped bullnose honey-oak profile (top Y = 0.912)
   const hutchCounter = new THREE.Mesh(
-    createBeveledSlab(0.66, 0.032, 1.40, 0.022, 0.008),
+    createBeveledSlab(0.66, 0.032, 1.40, 0.018, 0.007),
     oakMat
   );
   hutchCounter.position.y = 0.896;
   hutchCounter.castShadow = true;
-  outlines.addOutline(hutchCounter, 1.016);
+  hutchCounter.receiveShadow = true;
+  outlines.addOutline(hutchCounter, 1.015);
   hutchGroup.add(hutchCounter);
 
+  // 3 Strictly Edge-Aligned Lower Shaker Doors & Drawers (span ±0.672 on ±0.680 carcass, 6mm clean reveal!)
+  // Every door and drawer fitted with turned burnished copper-brass round knobs (铜黄圆形把手)!
   for (const [dIdx, hz] of [
-    [0, -0.43],
+    [0, -0.450],
     [1, 0.0],
-    [2, 0.43],
+    [2, 0.450],
   ] as const) {
-    const baseDoor = createMoldedDrawerFront(
-      0.40,
-      0.54,
-      0.024,
-      'x',
-      woodPanelMat,
-      woodMoldingMat,
-      steelMat,
-      -1,
-      dIdx === 0 ? 1 : -1
-    );
-    baseDoor.position.set(-0.32, 0.38, hz);
+    const baseDoor = createCraftedCabinetFront({
+      width: 0.444,
+      height: 0.580,
+      depth: 0.024,
+      facingAxis: 'x',
+      facingSign: -1,
+      frameMat: oakMat,
+      panelMat: woodPanelMat,
+      grooveMat: woodGrooveMat,
+      handleMat: copperBrassMat,
+      handleKind: 'knob',
+      handleAlign: dIdx === 0 ? 1 : -1,
+      handleYOffset: 0.14,
+      stileWidth: 0.046,
+    });
+    baseDoor.position.set(-0.322, 0.374, hz);
     hutchGroup.add(baseDoor);
 
-    const baseDrw = createMoldedDrawerFront(
-      0.40,
-      0.16,
-      0.024,
-      'x',
-      woodPanelMat,
-      woodMoldingMat,
-      steelMat,
-      -1
-    );
-    baseDrw.position.set(-0.32, 0.76, hz);
+    const baseDrw = createCraftedCabinetFront({
+      width: 0.444,
+      height: 0.194,
+      depth: 0.024,
+      facingAxis: 'x',
+      facingSign: -1,
+      frameMat: oakMat,
+      panelMat: woodPanelMat,
+      grooveMat: woodGrooveMat,
+      handleMat: copperBrassMat,
+      handleKind: 'knob',
+      handleAlign: 0,
+      stileWidth: 0.034,
+    });
+    baseDrw.position.set(-0.322, 0.771, hz);
     hutchGroup.add(baseDrw);
   }
 
-  // Upper Glass-Front Display Hutch Carcass (Y = 0.91 .. 2.26) with Deep Dark Interior Cavity
-  for (const sy of [0.925, 1.56, 2.22]) {
-    const hShelf = new THREE.Mesh(
-      createBeveledBox(0.46, 0.028, 1.34, 0.006, 2),
+  // 2) Upper Glass-Front Display Hutch Carcass (strictly spanning Z = -0.670..+0.670, Y = 0.912..2.232, X = -0.170..+0.290)
+  // Bottom & Top Carcass Boards flush at Y = 0.912..0.940 and Y = 2.204..2.232
+  for (const sy of [0.926, 2.218]) {
+    const endBoard = new THREE.Mesh(
+      createBeveledBox(0.46, 0.028, 1.312, 0.004, 2),
       oakMat
     );
-    hShelf.position.set(0.06, sy, 0);
-    hShelf.castShadow = true;
-    hutchGroup.add(hShelf);
+    endBoard.position.set(0.060, sy, 0);
+    endBoard.castShadow = true;
+    endBoard.receiveShadow = true;
+    hutchGroup.add(endBoard);
   }
-  // Top crown molding cornice on the glass hutch
-  const hutchCrown = new THREE.Mesh(
-    createBeveledSlab(0.50, 0.038, 1.40, 0.016, 0.006),
-    oakMat
-  );
-  hutchCrown.position.set(0.05, 2.25, 0);
-  hutchCrown.castShadow = true;
-  outlines.addOutline(hutchCrown, 1.016);
-  hutchGroup.add(hutchCrown);
 
-  for (const sz of [-0.655, 0.655]) {
-    const hSide = new THREE.Mesh(
-      createBeveledBox(0.46, 1.32, 0.028, 0.006, 2),
+  // Two Interior Display Shelves (3 tidy display tiers) recessed 2.2cm behind the glass doors
+  for (const sy of [1.36, 1.79]) {
+    const innerShelf = new THREE.Mesh(
+      createBeveledBox(0.415, 0.024, 1.284, 0.004, 2),
       oakMat
     );
-    hSide.position.set(0.06, 1.57, sz);
-    hSide.castShadow = true;
-    outlines.addOutline(hSide, 1.018);
-    hutchGroup.add(hSide);
+    innerShelf.position.set(0.072, sy, 0);
+    innerShelf.castShadow = true;
+    innerShelf.receiveShadow = true;
+    hutchGroup.add(innerShelf);
+
+    // Molded front shelf edge lip
+    const shelfLip = new THREE.Mesh(
+      createBeveledBox(0.014, 0.028, 1.284, 0.003, 1),
+      darkWoodMat
+    );
+    shelfLip.position.set(-0.132, sy, 0);
+    hutchGroup.add(shelfLip);
   }
+
+  // Full-height Side Walls (exact outer Z faces at ±0.670, front X at -0.170, Y = 0.912..2.232)
+  for (const sSide of [-1, 1] as const) {
+    const hSide = new THREE.Mesh(
+      createBeveledBox(0.46, 1.320, 0.028, 0.004, 2),
+      oakMat
+    );
+    hSide.position.set(0.060, 1.572, sSide * 0.656);
+    hSide.castShadow = true;
+    hSide.receiveShadow = true;
+    outlines.addOutline(hSide, 1.016);
+    hutchGroup.add(hSide);
+
+    // Subtle recessed Shaker panel trim on exposed upper cabinet side flanks
+    const sidePanelTrim = createCraftedCabinetFront({
+      width: 0.40,
+      height: 1.22,
+      depth: 0.012,
+      facingAxis: 'z',
+      facingSign: sSide,
+      frameMat: oakMat,
+      panelMat: woodPanelMat,
+      grooveMat: woodGrooveMat,
+      handleKind: 'none',
+      stileWidth: 0.042,
+    });
+    sidePanelTrim.position.set(0.060, 1.572, sSide * 0.670);
+    hutchGroup.add(sidePanelTrim);
+  }
+
+  // Warm planked oak interior back panel + subtle vertical groove battens (warm depth behind dishes!)
   const hutchBack = new THREE.Mesh(
-    createBeveledBox(0.024, 1.30, 1.30, 0.004, 1),
+    createBeveledBox(0.024, 1.292, 1.292, 0.003, 1),
     cavityDarkMat
   );
-  hutchBack.position.set(0.275, 1.57, 0);
+  hutchBack.position.set(0.278, 1.572, 0);
+  hutchBack.receiveShadow = true;
   hutchGroup.add(hutchBack);
 
-  // White Porcelain Mugs, Stemmed Wine Glasses & Stacked Ribbed Bowls inside the Adapted Glass Hutch
-  for (const mz of [-0.46, -0.26, -0.06, 0.14]) {
-    const mug = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.036, 0.032, 0.085, 14),
-      creamMat
+  for (let pz = -0.52; pz <= 0.521; pz += 0.13) {
+    const backGroove = new THREE.Mesh(
+      new THREE.BoxGeometry(0.004, 1.28, 0.006),
+      woodGrooveMat
     );
-    mug.position.set(0.04, 1.62, mz);
-    mug.castShadow = true;
-    hutchGroup.add(mug);
+    backGroove.position.set(0.264, 1.572, pz);
+    hutchGroup.add(backGroove);
   }
-  for (const wz of [0.32, 0.46]) {
-    const wineBowl = new THREE.Mesh(
-      new THREE.SphereGeometry(0.036, 12, 10, 0, Math.PI * 2, 0, Math.PI * 0.65),
-      cabinetGlassMat
-    );
-    wineBowl.rotation.x = Math.PI;
-    wineBowl.position.set(0.04, 1.69, wz);
-    wineBowl.userData.dynamic = true;
-    hutchGroup.add(wineBowl);
-    const wineStem = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.004, 0.004, 0.075, 8),
-      creamMat
-    );
-    wineStem.position.set(0.04, 1.62, wz);
-    hutchGroup.add(wineStem);
-  }
-  // Stacked white ceramic bowls & plates on the lower glass shelf
-  for (const bz of [-0.42, -0.14, 0.14, 0.42]) {
+
+  // Two-Tier Stepped Architectural Crown Cornice sitting flush atop Y = 2.232
+  const hutchCrownLower = new THREE.Mesh(
+    createBeveledSlab(0.49, 0.022, 1.375, 0.010, 0.004),
+    darkWoodMat
+  );
+  hutchCrownLower.position.set(0.048, 2.243, 0);
+  hutchCrownLower.castShadow = true;
+  hutchGroup.add(hutchCrownLower);
+
+  const hutchCrownUpper = new THREE.Mesh(
+    createBeveledSlab(0.52, 0.032, 1.415, 0.014, 0.006),
+    oakMat
+  );
+  hutchCrownUpper.position.set(0.038, 2.270, 0);
+  hutchCrownUpper.castShadow = true;
+  outlines.addOutline(hutchCrownUpper, 1.015);
+  hutchGroup.add(hutchCrownUpper);
+
+  // 3) Curated 3-Tier Dishware Collection clearly visible behind the optical glass!
+  const glazedSageMat = mat({ color: 0x9ab8a0, roughness: 0.26, metalness: 0.04 });
+  const glazedButterMat = mat({ color: 0xf2d494, roughness: 0.28, metalness: 0.04 });
+  const glazedBlushMat = mat({ color: 0xebb8bc, roughness: 0.28, metalness: 0.04 });
+
+  // Tier 1 (Bottom Shelf Y = 0.940): Stacked ribbed porcelain bowls & dinner plates
+  for (const bz of [-0.46, -0.16, 0.16, 0.46]) {
     for (let stack = 0; stack < 3; stack++) {
       const bowlMesh = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.082, 0.050, 0.052, 16),
-        creamMat
+        new THREE.CylinderGeometry(0.084, 0.052, 0.050, 18),
+        stack === 2 && bz > 0 ? glazedSageMat : creamMat
       );
-      bowlMesh.position.set(0.04, 0.97 + stack * 0.042, bz);
+      bowlMesh.position.set(0.04, 0.966 + stack * 0.040, bz);
       bowlMesh.castShadow = true;
       hutchGroup.add(bowlMesh);
     }
   }
 
-  // Twin Wide Interactive Framed Transparent Glass Doors on the Hutch
+  // Tier 2 (Middle Shelf Y = 1.372): White porcelain mugs & stemmed crystal wine glasses
+  for (const mz of [-0.48, -0.28, -0.08, 0.12]) {
+    const mug = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.038, 0.033, 0.090, 16),
+      mz < -0.2 ? glazedButterMat : creamMat
+    );
+    mug.position.set(0.04, 1.418, mz);
+    mug.castShadow = true;
+    hutchGroup.add(mug);
+  }
+  for (const wz of [0.30, 0.46]) {
+    const wineBowl = new THREE.Mesh(
+      new THREE.SphereGeometry(0.036, 14, 10, 0, Math.PI * 2, 0, Math.PI * 0.65),
+      cabinetGlassMat
+    );
+    wineBowl.rotation.x = Math.PI;
+    wineBowl.position.set(0.04, 1.505, wz);
+    wineBowl.userData.dynamic = true;
+    hutchGroup.add(wineBowl);
+
+    const wineStem = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.0038, 0.0038, 0.082, 8),
+      retroChromeMat
+    );
+    wineStem.position.set(0.04, 1.430, wz);
+    hutchGroup.add(wineStem);
+
+    const wineFoot = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.024, 0.026, 0.005, 14),
+      retroChromeMat
+    );
+    wineFoot.position.set(0.04, 1.386, wz);
+    hutchGroup.add(wineFoot);
+  }
+
+  // Tier 3 (Top Shelf Y = 1.802): Ceramic pitcher, pastel spice canisters & upright display plates
+  const pitcherBody = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.044, 0.062, 0.175, 16),
+    creamMat
+  );
+  pitcherBody.position.set(0.06, 1.892, -0.44);
+  pitcherBody.castShadow = true;
+  hutchGroup.add(pitcherBody);
+
+  for (const [cz, ch, cmat] of [
+    [-0.22, 0.135, glazedBlushMat],
+    [-0.04, 0.155, glazedSageMat],
+    [0.14, 0.125, glazedButterMat],
+  ] as const) {
+    const canister = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.048, 0.048, ch, 16),
+      cmat
+    );
+    canister.position.set(0.05, 1.804 + ch * 0.5, cz);
+    canister.castShadow = true;
+    hutchGroup.add(canister);
+
+    const lid = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.050, 0.050, 0.016, 16),
+      oakMat
+    );
+    lid.position.set(0.05, 1.804 + ch + 0.008, cz);
+    hutchGroup.add(lid);
+  }
+  for (const pz of [0.34, 0.48]) {
+    const plate = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.092, 0.092, 0.012, 20),
+      creamMat
+    );
+    plate.rotation.z = Math.PI / 2 - 0.16;
+    plate.position.set(0.11, 1.895, pz);
+    plate.castShadow = true;
+    hutchGroup.add(plate);
+  }
+
+  // 4) Twin Strictly Edge-Aligned Interactive Glass Doors with Copper-Brass Round Knobs!
+  //    Carcass outer span: Z = -0.670..+0.670 (1.340m), Y = 0.912..2.232 (1.320m), front X = -0.170
+  //    Each door: width = 0.668m, height = 1.320m, thickness = 0.026m -> centerX = -0.183, centerZ = ±0.336
+  //    Result: 0.000m outer edge overhang error + crisp 4mm center meeting seam!
   for (const [idx, hz] of [
-    [0, -0.315],
-    [1, 0.315],
+    [0, -0.336],
+    [1, 0.336],
   ] as const) {
     const hingeSide: -1 | 1 = idx === 0 ? -1 : 1;
-    const hutchGlassDoor = buildFramedGlassDoor(0.61, 1.26, 0.026, (-hingeSide) as -1 | 1);
+    const hutchGlassDoor = buildFramedGlassDoor(
+      0.668,
+      1.320,
+      0.026,
+      (-hingeSide) as -1 | 1,
+      -0.18
+    );
     registerCabinetDoor({
       id: `kit_hutch_glass_${idx}`,
       label: idx === 0 ? '玻璃餐具柜左门' : '玻璃餐具柜右门',
       room: 'kitchen',
       parent: hutchGroup,
-      centerX: -0.175,
-      centerY: 1.57,
+      centerX: -0.183,
+      centerY: 1.572,
       centerZ: hz,
-      width: 0.61,
-      height: 1.26,
+      width: 0.668,
+      height: 1.320,
       thickness: 0.026,
       facingAxis: 'x',
       facingSign: -1,
       hingeSide,
       openSign: hingeSide,
       doorMat: oakMat,
-      moldingMat: darkWoodMat,
-      handleMat: steelMat,
+      moldingMat: woodMoldingMat,
+      handleMat: copperBrassMat,
       customDoorGroup: hutchGlassDoor,
       addRecessedCavity: false,
     });

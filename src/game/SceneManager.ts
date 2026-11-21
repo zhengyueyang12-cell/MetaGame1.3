@@ -22,7 +22,6 @@ const _invisibleRaycastMat = new THREE.MeshBasicMaterial({
 const _tmpBox = new THREE.Box3();
 const _tmpSize = new THREE.Vector3();
 const _tmpCenter = new THREE.Vector3();
-const _normalMat = new THREE.Matrix3();
 
 /**
  * Normalizes a BufferGeometry so that all geometries passed to
@@ -78,9 +77,8 @@ export function normalizeGeometryForMerge(
     origNormArray[i3 + 2] = nz;
   }
 
-  // Transform position & normal into target group coordinate space
+  // Transform position & normal into target group coordinate space (in-place on fresh non-indexed geo)
   geo.applyMatrix4(worldMatrix);
-  _normalMat.getNormalMatrix(worldMatrix);
 
   const worldNormAttr = geo.getAttribute('normal') as THREE.BufferAttribute;
   for (let i = 0; i < vertCount; i++) {
@@ -96,19 +94,19 @@ export function normalizeGeometryForMerge(
   let uvAttr = geo.getAttribute('uv') as THREE.BufferAttribute | undefined;
   if (!uvAttr || uvAttr.itemSize !== 2) {
     uvAttr = new THREE.BufferAttribute(new Float32Array(vertCount * 2), 2);
-  } else {
-    uvAttr = uvAttr.clone();
   }
 
-  const cleanGeo = new THREE.BufferGeometry();
-  cleanGeo.setAttribute('position', (geo.getAttribute('position') as THREE.BufferAttribute).clone());
-  cleanGeo.setAttribute('normal', worldNormAttr.clone());
-  cleanGeo.setAttribute('uv', uvAttr);
-  cleanGeo.setAttribute('aOrigPos', new THREE.BufferAttribute(origPosArray, 3));
-  cleanGeo.setAttribute('aOrigNormal', new THREE.BufferAttribute(origNormArray, 3));
-
-  geo.dispose();
-  return cleanGeo;
+  // Strip any extra/mismatched attributes and reuse the already-allocated buffers directly (no double-cloning!)
+  for (const attrName of Object.keys(geo.attributes)) {
+    if (attrName !== 'position' && attrName !== 'normal' && attrName !== 'uv') {
+      geo.deleteAttribute(attrName);
+    }
+  }
+  geo.setAttribute('uv', uvAttr);
+  geo.setAttribute('aOrigPos', new THREE.BufferAttribute(origPosArray, 3));
+  geo.setAttribute('aOrigNormal', new THREE.BufferAttribute(origNormArray, 3));
+  geo.clearGroups();
+  return geo;
 }
 
 /**
@@ -213,9 +211,12 @@ export function mergeStaticGroupToSingleMesh(
     if (Array.isArray(mesh.material)) return;
 
     // Bake static InstancedMeshes straight into the merged room mesh to eliminate extra draw calls
+    // (Preserve InstancedMeshes that rely on per-instance vertex colorTint or runtime animation!)
     if ((mesh as THREE.InstancedMesh).isInstancedMesh) {
       const inst = mesh as THREE.InstancedMesh;
-      if (inst.userData?.animatedInstance || isInsideDynamicAncestor(inst)) return;
+      if (inst.userData?.animatedInstance || inst.instanceColor || isInsideDynamicAncestor(inst)) {
+        return;
+      }
       const mat = inst.material as THREE.Material;
       const targetMap = inst.castShadow ? casterBuckets : receiverOnlyBuckets;
       let bucket = targetMap.get(mat);
@@ -413,8 +414,9 @@ export function mergeDynamicSubtreeMeshes(
       return;
     }
 
-    if (mesh.castShadow) anyCastsShadow = true;
     const mat = mesh.material as THREE.Material;
+    if (mat.transparent) return;
+    if (mesh.castShadow) anyCastsShadow = true;
     let list = buckets.get(mat);
     if (!list) {
       list = [];
@@ -545,11 +547,10 @@ export class SceneManager {
     viewMode: ViewMode,
     doors: DoorController[],
     ceilingLamps: CeilingLampRig[]
-  ): void {
+  ): boolean {
     // In birds-eye overview mode or when culling is disabled, show all rooms
     if (viewMode === 'overview' || !this.cullingEnabled) {
-      this.applyVisibleSet(new Set(ALL_ROOMS), ceilingLamps);
-      return;
+      return this.applyVisibleSet(new Set(ALL_ROOMS), ceilingLamps);
     }
 
     const bedroomDoorOpen = this.isDoorOpen(doors, 'door_bedroom');
@@ -624,13 +625,11 @@ export class SceneManager {
       }
 
       case 'entryway': {
+        // Open-plan sightline runs straight East through the Entryway archway -> Dining -> Kitchen
         pvs.add('dining');
+        pvs.add('kitchen');
         if (livingDoorOpen && playerFeetPos.z < 2.7) {
           pvs.add('living');
-        }
-        // Kitchen is behind the X = +3.18 partition wall; only visible when near the dining archway
-        if (playerFeetPos.x > -4.15) {
-          pvs.add('kitchen');
         }
         if (basementDoorOpen) {
           pvs.add('basement');
@@ -657,13 +656,11 @@ export class SceneManager {
       }
 
       case 'kitchen': {
+        // Direct open sightline straight West across Dining & Entryway archway to the front door
         pvs.add('dining');
+        pvs.add('entryway');
         if (livingDoorOpen || playerFeetPos.z < 0.92) {
           pvs.add('living');
-        }
-        // Entryway genkan vestibule is occluded by the X = -2.70 wall when inside the kitchen
-        if (playerFeetPos.x < 4.4 && playerFeetPos.z > 2.45) {
-          pvs.add('entryway');
         }
         if (basementDoorOpen && playerFeetPos.x < 4.4) {
           pvs.add('basement');
@@ -675,7 +672,7 @@ export class SceneManager {
       }
     }
 
-    this.applyVisibleSet(pvs, ceilingLamps);
+    return this.applyVisibleSet(pvs, ceilingLamps);
   }
 
   private isDoorOpen(doors: DoorController[], doorId: string): boolean {
@@ -691,14 +688,18 @@ export class SceneManager {
   private applyVisibleSet(
     nextVisible: Set<RoomId>,
     _ceilingLamps: CeilingLampRig[]
-  ): void {
+  ): boolean {
+    let changed = false;
     this.visibleRooms = nextVisible;
 
     for (const room of ALL_ROOMS) {
       const isVis = nextVisible.has(room);
       const group = this.roomGroups.get(room);
       if (group) {
-        group.visible = isVis;
+        if (group.visible !== isVis) {
+          group.visible = isVis;
+          changed = true;
+        }
         // Keep room groups attached so Three.js never rebuilds scene graphs or recompiles light shaders!
         if (this.detachFromScene) {
           if (isVis && group.parent !== this.scene) {
@@ -714,10 +715,15 @@ export class SceneManager {
         for (let i = 0; i < extras.length; i++) {
           // Never toggle .visible on THREE.Light objects (would trigger synchronous WebGL shader recompile!)
           if (!(extras[i] as THREE.Light).isLight) {
-            extras[i].visible = isVis;
+            if (extras[i].visible !== isVis) {
+              extras[i].visible = isVis;
+              changed = true;
+            }
           }
         }
       }
     }
+
+    return changed;
   }
 }

@@ -10,11 +10,15 @@ import {
   createPinchedPlumpPillowGeometry,
   createPinchedTuftedBackCushionGeometry,
   createPlushBox,
-  createSculptedMoaiGroup,
+  createRetroCartridgeGeometry,
   createTaperedCurveGeometry,
   createTurnedLegGeometry,
+  createVinylSleeveGeometry,
 } from '../geometries';
+import { createArchitecturalGlassMaterial } from '../pipeline';
+import { LOFI_TRACKS, type LofiTrackSpec } from '../vinylPlayer';
 import {
+  mergeDynamicSubtreeMeshes,
   mergeStaticGroupToSingleMesh,
   normalizeGeometryForMerge,
 } from '../SceneManager';
@@ -61,11 +65,20 @@ function composeSplayedLegMatrix(
   return _instMat.clone();
 }
 
-export function buildLivingRoom(ctx: RoomBuildContext, playDoorAudio: (open: boolean) => void): void {
+export function buildLivingRoom(
+  ctx: RoomBuildContext,
+  playDoorAudio: (open: boolean) => void,
+  turntableControls?: {
+    onCycleTurntable: () => { playing: boolean; trackIndex: number; track: LofiTrackSpec };
+    onNextTrack: () => { playing: boolean; trackIndex: number; track: LofiTrackSpec };
+    onTogglePlay: () => { playing: boolean; trackIndex: number; track: LofiTrackSpec };
+  }
+): void {
   const {
     scene,
     sceneManager,
     ceilingGroup,
+    uniforms,
     textures,
     outlines,
     mat,
@@ -491,15 +504,284 @@ export function buildLivingRoom(ctx: RoomBuildContext, playDoorAudio: (open: boo
     metalness: 0.0,
     fabricCream: 1.0,
   });
-  // Matte Cloth & Paper Book Atlas Material (printed titles + geometric covers, zero plastic sheen)
+  // Light-toned Matte Paper & Cloth Book Atlas Material (16-variant sculpted books)
   const bookAtlasMat = mat({
     map: textures.bookCoverAtlas,
     bumpMap: textures.bookCoverBump,
-    bumpScale: 0.012,
+    bumpScale: 0.010,
     color: 0xffffff,
-    roughness: 0.94,
+    roughness: 0.88,
     metalness: 0.0,
+    celStrength: 0.42,
+    woodLacquer: 0.0,
   });
+  // Semi-matte printed cardboard 12-inch Vinyl LP Jacket Atlas Material (8 distinct illustrated covers)
+  const vinylSleeveMat = mat({
+    map: textures.vinylSleeveAtlas,
+    bumpMap: textures.bookCoverBump,
+    bumpScale: 0.005,
+    color: 0xffffff,
+    roughness: 0.72,
+    metalness: 0.0,
+    celStrength: 0.38,
+    woodLacquer: 0.08,
+  });
+  // Pastel retro game cartridge plastics (warm shell grey, mint, lavender, butter yellow) + printed label
+  const retroCartridgeMats = [
+    mat({ color: 0xdfe2e8, roughness: 0.56, metalness: 0.02, celStrength: 0.44 }),
+    mat({ color: 0xbde0d1, roughness: 0.54, metalness: 0.02, celStrength: 0.44 }),
+    mat({ color: 0xd4c8e8, roughness: 0.54, metalness: 0.02, celStrength: 0.44 }),
+    mat({ color: 0xf2df9e, roughness: 0.54, metalness: 0.02, celStrength: 0.44 }),
+  ];
+  const retroLabelMat = mat({ color: 0xfcf8f0, roughness: 0.70, metalness: 0.0, celStrength: 0.38 });
+
+  /**
+   * Populates a single shelf bay with naturally varied, sculpted light-toned books:
+   * consecutive Manga tankobon sets (0-3), Literary fiction (4-7), Philosophy (8-11),
+   * taller Technical/Design volumes (12-13), Retro Game Cases (14-15), sculpted pastel
+   * Retro Game Cartridges, organic depth stagger, leaning end-books, and occasional flat stacks.
+   */
+  const populateRealisticBookTier = (opts: {
+    parent: THREE.Object3D;
+    axis: 'x' | 'z';
+    spineSign?: 1 | -1;
+    start: number;
+    end: number;
+    surfaceY: number;
+    depthCenter: number;
+    maxDepth: number;
+    maxHeight: number;
+    seed: number;
+    includeMangaSet?: boolean;
+    includeHorizontalStack?: boolean;
+    includeRetroGames?: boolean;
+  }) => {
+    const {
+      parent,
+      axis,
+      spineSign = 1,
+      start,
+      end,
+      surfaceY,
+      depthCenter,
+      maxDepth,
+      maxHeight,
+      seed,
+      includeMangaSet = false,
+      includeHorizontalStack = false,
+      includeRetroGames = true,
+    } = opts;
+
+    let rngState = (seed * 1664525 + 1013904223) >>> 0;
+    const nextRand = () => {
+      rngState = (rngState * 1664525 + 1013904223) >>> 0;
+      return (rngState & 0xffff) / 0xffff;
+    };
+
+    const placeItem = (
+      along: number,
+      y: number,
+      depthOffset: number,
+      mesh: THREE.Object3D,
+      lean = 0,
+      extraYaw = 0
+    ) => {
+      const depthPos = depthCenter + depthOffset * spineSign;
+      if (axis === 'x') {
+        mesh.position.set(along, y, depthPos);
+        mesh.rotation.z = lean;
+        mesh.rotation.y = (spineSign === -1 ? Math.PI : 0) + extraYaw;
+      } else {
+        mesh.position.set(depthPos, y, along);
+        mesh.rotation.x = -lean;
+        mesh.rotation.y = (spineSign === -1 ? Math.PI : 0) + extraYaw;
+      }
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
+      parent.add(mesh);
+    };
+
+    const makeBookGeo = (thick: number, height: number, depth: number, variantIdx: number) =>
+      axis === 'x'
+        ? createBookGeometry(thick, height, depth, variantIdx)
+        : createBookGeometry(depth, height, thick, variantIdx);
+
+    const safeMaxH = Math.max(0.155, maxHeight - 0.022);
+    const safeMaxD = Math.max(0.125, maxDepth - 0.025);
+
+    // Optionally reserve space at the right end of the shelf for a cozy horizontal book stack (+ retro cartridge)
+    let uprightEnd = end;
+    const stackSpan = 0.178;
+    const doStack = includeHorizontalStack && end - start > 0.36;
+    if (doStack) {
+      uprightEnd = end - stackSpan - 0.024;
+    }
+
+    let cursor = start + 0.008;
+
+    // 1) Consecutive matched Manga set (3-4 slim tankobon volumes side-by-side)
+    if (includeMangaSet && uprightEnd - cursor > 0.11) {
+      const volCount = nextRand() > 0.42 ? 4 : 3;
+      const baseMangaH = Math.min(safeMaxH, 0.172 + nextRand() * 0.008);
+      const baseMangaD = Math.min(safeMaxD, 0.128 + nextRand() * 0.008);
+      for (let v = 0; v < volCount; v++) {
+        const thick = 0.0175 + nextRand() * 0.0028;
+        if (cursor + thick > uprightEnd - 0.01) break;
+        const h = baseMangaH + (nextRand() - 0.5) * 0.004;
+        const d = baseMangaD + (nextRand() - 0.5) * 0.004;
+        const depthStagger = (nextRand() - 0.45) * 0.010;
+        const bk = new THREE.Mesh(makeBookGeo(thick, h, d, v), bookAtlasMat);
+        placeItem(cursor + thick * 0.5, surfaceY + h * 0.5, depthStagger, bk, 0);
+        cursor += thick + 0.0022;
+      }
+      cursor += 0.008;
+    }
+
+    // 2) Mixed Literature, Philosophy, Technical/Design books & Retro Game Cases/Cartridges
+    let itemCount = 0;
+    let placedCartridge = false;
+    while (cursor < uprightEnd - 0.036) {
+      const remaining = uprightEnd - cursor;
+      const roll = nextRand();
+
+      // Occasional sculpted upright pastel retro game cartridge tucked beside books
+      if (
+        includeRetroGames &&
+        !placedCartridge &&
+        itemCount >= 2 &&
+        remaining > 0.055 &&
+        roll > 0.84
+      ) {
+        const cartThick = 0.017;
+        const cartH = 0.088;
+        const cartD = Math.min(safeMaxD, 0.126);
+        const cartMat = retroCartridgeMats[Math.floor(nextRand() * retroCartridgeMats.length)];
+        const cartGroup = new THREE.Group();
+        const cartBody = new THREE.Mesh(
+          axis === 'x'
+            ? createRetroCartridgeGeometry(cartThick, cartH, cartD)
+            : createRetroCartridgeGeometry(cartD, cartH, cartThick),
+          cartMat
+        );
+        cartBody.castShadow = true;
+        cartBody.receiveShadow = true;
+        cartGroup.add(cartBody);
+
+        // Printed front label sticker on cartridge face
+        const sticker = new THREE.Mesh(
+          new THREE.BoxGeometry(
+            axis === 'x' ? 0.0018 : cartD * 0.58,
+            cartH * 0.54,
+            axis === 'x' ? cartD * 0.58 : 0.0018
+          ),
+          retroLabelMat
+        );
+        if (axis === 'x') {
+          sticker.position.set(cartThick * 0.49, 0.004, 0);
+        } else {
+          sticker.position.set(0, 0.004, cartThick * 0.49);
+        }
+        cartGroup.add(sticker);
+
+        placeItem(cursor + cartThick * 0.5, surfaceY + cartH * 0.5, 0.012, cartGroup, 0);
+        cursor += cartThick + 0.006;
+        placedCartridge = true;
+        itemCount++;
+        continue;
+      }
+
+      // Pick category & realistic dimensions
+      let variantIdx: number;
+      let thick: number;
+      let height: number;
+      let depth: number;
+
+      if (includeRetroGames && roll < 0.16) {
+        // Retro Game Box (14-15)
+        variantIdx = 14 + (itemCount % 2);
+        thick = 0.017 + nextRand() * 0.004;
+        height = Math.min(safeMaxH, 0.176 + nextRand() * 0.014);
+        depth = Math.min(safeMaxD, 0.136 + nextRand() * 0.008);
+      } else if (roll < 0.48) {
+        // Literary Fiction (4-7)
+        variantIdx = 4 + Math.floor(nextRand() * 4);
+        thick = 0.021 + nextRand() * 0.008;
+        height = Math.min(safeMaxH, 0.184 + nextRand() * 0.028);
+        depth = Math.min(safeMaxD, 0.138 + nextRand() * 0.018);
+      } else if (roll < 0.78) {
+        // Philosophy (8-11)
+        variantIdx = 8 + Math.floor(nextRand() * 4);
+        thick = 0.022 + nextRand() * 0.010;
+        height = Math.min(safeMaxH, 0.194 + nextRand() * 0.030);
+        depth = Math.min(safeMaxD, 0.144 + nextRand() * 0.018);
+      } else {
+        // Technical / Design Manual (12-13)
+        variantIdx = 12 + (itemCount % 2);
+        thick = 0.026 + nextRand() * 0.008;
+        height = Math.min(safeMaxH, 0.218 + nextRand() * 0.032);
+        depth = Math.min(safeMaxD, 0.156 + nextRand() * 0.020);
+      }
+
+      // Lean the very last book naturally against the upright row if space permits
+      const isLast = remaining < thick + 0.068 && itemCount >= 2;
+      const lean = isLast ? -(0.14 + nextRand() * 0.07) : 0;
+      const leanExtraSpan = isLast ? Math.abs(Math.sin(lean)) * height * 0.55 : 0;
+      if (cursor + thick + leanExtraSpan > uprightEnd) break;
+
+      const depthStagger = (nextRand() - 0.45) * 0.020;
+      const bkMesh = new THREE.Mesh(makeBookGeo(thick, height, depth, variantIdx), bookAtlasMat);
+      const yCenter =
+        surfaceY + (height * Math.cos(lean)) * 0.5 + (thick * Math.abs(Math.sin(lean))) * 0.5;
+      placeItem(
+        cursor + thick * 0.5 + leanExtraSpan * 0.55,
+        yCenter,
+        depthStagger,
+        bkMesh,
+        lean
+      );
+
+      cursor += thick + 0.0028 + leanExtraSpan;
+      itemCount++;
+      if (isLast) break;
+    }
+
+    // 3) Cozy Horizontal Stack of 2-3 books (plus optional pastel retro cartridge on top)
+    if (doStack) {
+      const stackCenter = end - stackSpan * 0.5 - 0.008;
+      let stackY = surfaceY;
+      const stackCount = nextRand() > 0.45 ? 3 : 2;
+      for (let s = 0; s < stackCount; s++) {
+        const flatW = Math.min(stackSpan, 0.168 - s * 0.012);
+        const flatD = Math.min(safeMaxD, 0.142 - s * 0.008);
+        const flatT = 0.022 + nextRand() * 0.007;
+        const varIdx = (4 + ((seed + s * 5) % 10)) % 16;
+        // Flat books keep their curved spine on +Z; rotate +PI/2 when placed on Z-axis shelves so spine faces outward (+X/-X)
+        const flatGeo = createBookGeometry(flatW, flatT, flatD, varIdx);
+        const flatBook = new THREE.Mesh(flatGeo, bookAtlasMat);
+        const baseFlatYaw = axis === 'z' ? Math.PI / 2 : 0;
+        const yawJitter = baseFlatYaw + (s % 2 === 0 ? 1 : -1) * (0.06 + nextRand() * 0.08);
+        placeItem(
+          stackCenter + (nextRand() - 0.5) * 0.008,
+          stackY + flatT * 0.5,
+          (nextRand() - 0.5) * 0.008,
+          flatBook,
+          0,
+          yawJitter
+        );
+        stackY += flatT;
+      }
+
+      // Rest a sculpted retro cartridge neatly on top of the flat book stack
+      if (includeRetroGames && stackY + 0.025 < surfaceY + safeMaxH) {
+        const cartMat = retroCartridgeMats[(seed + 1) % retroCartridgeMats.length];
+        const flatCart = new THREE.Mesh(
+          createRetroCartridgeGeometry(0.118, 0.016, 0.082),
+          cartMat
+        );
+        placeItem(stackCenter + 0.004, stackY + 0.0085, 0.005, flatCart, 0, 0.22);
+      }
+    }
+  };
   const cavityDarkMat = mat({
     color: 0x8e6b5c,
     roughness: 0.88,
@@ -507,8 +789,6 @@ export function buildLivingRoom(ctx: RoomBuildContext, playDoorAudio: (open: boo
     woodLacquer: 0.15,
   });
   const ceramicMat = mat({ color: 0xfff8fa, roughness: 0.34, metalness: 0.02 });
-  const moaiMat = mat({ color: 0x7b728c, roughness: 0.90, metalness: 0.0 });
-  const moaiDarkMat = mat({ color: 0x5c536b, roughness: 0.92, metalness: 0.0 });
   // Botanical veined waxy plant leaf materials + rich organic granular potting soil
   const plantLeafMat = mat({
     map: textures.plantLeaf,
@@ -1272,27 +1552,37 @@ export function buildLivingRoom(ctx: RoomBuildContext, playDoorAudio: (open: boo
     tweeter.position.set(-0.088, 0.025, spZ);
     wallShelf.add(tweeter);
   }
-  // Neat row of shelf hardcovers with printed titles & geometric cover art (bookCoverAtlas)
-  const tvShelfBookSpecs: [number, number, number, number, number][] = [
-    [-0.50, 0.20, 0.032, 0, 0],
-    [-0.45, 0.22, 0.034, 0, 1],
-    [-0.40, 0.19, 0.030, 0, 2],
-    [-0.35, 0.21, 0.032, -0.14, 3],
-    [0.08, 0.20, 0.034, 0, 4],
-    [0.13, 0.18, 0.030, 0, 5],
-    [0.18, 0.22, 0.034, 0.12, 6],
-  ];
-  for (const [bz, bh, bt, tilt, varIdx] of tvShelfBookSpecs) {
-    const sb = new THREE.Mesh(
-      createBookGeometry(0.16, bh, bt, varIdx),
-      bookAtlasMat
-    );
-    sb.position.set(-0.01, -0.142 + bh / 2, bz);
-    sb.rotation.x = tilt;
-    sb.castShadow = true;
-    sb.receiveShadow = true;
-    wallShelf.add(sb);
-  }
+  // Sculpted light-toned books, matched manga mini-set, horizontal stack & retro game cartridge inside floating TV shelf
+  populateRealisticBookTier({
+    parent: wallShelf,
+    axis: 'z',
+    spineSign: -1,
+    start: -0.58,
+    end: -0.06,
+    surfaceY: -0.142,
+    depthCenter: -0.01,
+    maxDepth: 0.175,
+    maxHeight: 0.275,
+    seed: 107,
+    includeMangaSet: true,
+    includeHorizontalStack: false,
+    includeRetroGames: true,
+  });
+  populateRealisticBookTier({
+    parent: wallShelf,
+    axis: 'z',
+    spineSign: -1,
+    start: 0.04,
+    end: 0.58,
+    surfaceY: -0.142,
+    depthCenter: -0.01,
+    maxDepth: 0.175,
+    maxHeight: 0.275,
+    seed: 211,
+    includeMangaSet: false,
+    includeHorizontalStack: true,
+    includeRetroGames: true,
+  });
   group.add(wallShelf);
 
   registerInteractable('liv_tv', '客厅电视', '打开 / 关闭电视', 'living', tvGroup, () => {
@@ -1379,12 +1669,10 @@ export function buildLivingRoom(ctx: RoomBuildContext, playDoorAudio: (open: boo
   bcBack.position.set(-0.132, 0.90, 0);
   shelf.add(bcBack);
 
-  // Matte linen/cardboard storage boxes with fitted lids & geometric label tags on upper tiers of the tall bookcase
+  // Two cozy linen storage boxes paired with generous open book zones on the upper bookcase tiers
   for (const [ty, tz, tw, th, col] of [
-    [0.925, -0.22, 0.22, 0.16, 0xf4eee6],
-    [0.925, 0.20, 0.24, 0.15, 0x7fb072],
-    [1.275, -0.18, 0.20, 0.18, 0xd89c6a],
-    [1.275, 0.22, 0.22, 0.14, 0x6280a6],
+    [0.925, 0.28, 0.22, 0.155, 0xf4eee6],
+    [1.275, -0.28, 0.22, 0.155, 0x8fb883],
   ] as const) {
     const boxFabricMat = mat({
       map: textures.plushFabric,
@@ -1486,25 +1774,25 @@ export function buildLivingRoom(ctx: RoomBuildContext, playDoorAudio: (open: boo
     notch.position.set(0.114, oy + 0.032, 0.06);
     chestGroup.add(notch);
   }
-  // Framed anime illustration standing on top of the 2-drawer organizer (Screenshot 1!)
+  // Framed blue-haired anime illustration standing on top of the 2-drawer organizer
   const orgFrame = new THREE.Mesh(
-    createBeveledBox(0.026, 0.16, 0.22, 0.005, 2),
+    createBeveledBox(0.026, 0.21, 0.165, 0.005, 2),
     oakMat
   );
-  orgFrame.position.set(-0.02, 1.15, 0.06);
+  orgFrame.position.set(-0.02, 1.17, 0.06);
   orgFrame.rotation.z = 0.12;
   orgFrame.castShadow = true;
   outlines.addOutline(orgFrame, 1.04);
   chestGroup.add(orgFrame);
   const orgPic = new THREE.Mesh(
-    new THREE.PlaneGeometry(0.17, 0.115),
-    mat({ map: textures.sofaArtworks[2], roughness: 0.45 })
+    new THREE.PlaneGeometry(0.125, 0.165),
+    mat({ map: textures.sofaArtworks[2], color: 0xe6dcd4, roughness: 0.92, celStrength: 0.44 })
   );
   orgPic.rotation.y = Math.PI / 2;
-  orgPic.position.set(-0.005, 1.15, 0.06);
+  orgPic.position.set(-0.005, 1.17, 0.06);
   chestGroup.add(orgPic);
 
-  // Floating Wooden Wall Shelf above the 3-Drawer Chest with Framed Art & White Potted Plant (Screenshot 1!)
+  // Floating Wooden Wall Shelf above the 3-Drawer Chest with Framed Art & White Potted Plant
   const chestWallShelf = new THREE.Group();
   chestWallShelf.position.set(-1.02, 1.72, -2.52);
   const cwsBoard = new THREE.Mesh(
@@ -1517,20 +1805,20 @@ export function buildLivingRoom(ctx: RoomBuildContext, playDoorAudio: (open: boo
   chestWallShelf.add(cwsBoard);
 
   const cwsArtFrame = new THREE.Mesh(
-    createBeveledBox(0.028, 0.24, 0.21, 0.006, 2),
+    createBeveledBox(0.028, 0.25, 0.20, 0.006, 2),
     oakMat
   );
-  cwsArtFrame.position.set(-0.01, 0.132, 0.18);
+  cwsArtFrame.position.set(-0.01, 0.136, 0.18);
   cwsArtFrame.rotation.z = 0.14;
   cwsArtFrame.castShadow = true;
   outlines.addOutline(cwsArtFrame, 1.035);
   chestWallShelf.add(cwsArtFrame);
   const cwsArtCanvas = new THREE.Mesh(
-    new THREE.PlaneGeometry(0.16, 0.19),
-    mat({ map: textures.sofaArtworks[1], roughness: 0.48 })
+    new THREE.PlaneGeometry(0.15, 0.20),
+    mat({ map: textures.sofaArtworks[1], color: 0xe6dcd4, roughness: 0.92, celStrength: 0.44 })
   );
   cwsArtCanvas.rotation.y = Math.PI / 2;
-  cwsArtCanvas.position.set(0.006, 0.132, 0.18);
+  cwsArtCanvas.position.set(0.006, 0.136, 0.18);
   chestWallShelf.add(cwsArtCanvas);
 
   // Small white ceramic potted green plant on the floating wall shelf (with dark potting soil & veined leaves)
@@ -2140,34 +2428,71 @@ export function buildLivingRoom(ctx: RoomBuildContext, playDoorAudio: (open: boo
   bcLegsInst.computeBoundingSphere();
   group.add(bcLegsInst);
 
-  // 13 Hardcover Books with Printed Titles, Spine Volume Badges & Geometric Cover Illustrations (bookAtlasMat)
-  const bookSpecs: [number, number, number, number, number, number][] = [
-    [0.575, -0.33, 0.20, 0.036, 0, 0],
-    [0.575, -0.28, 0.22, 0.038, 0, 1],
-    [0.575, -0.23, 0.18, 0.034, 0, 2],
-    [0.575, -0.18, 0.21, 0.036, 0, 3],
-    [0.575, -0.12, 0.20, 0.035, -0.20, 4],
-    [0.575, 0.16, 0.22, 0.040, 0.16, 5],
-    [0.575, 0.22, 0.20, 0.038, 0, 6],
-    [0.575, 0.27, 0.23, 0.040, 0, 7],
-    [0.197, -0.30, 0.21, 0.038, 0, 1],
-    [0.197, -0.25, 0.23, 0.040, 0, 2],
-    [0.197, -0.19, 0.20, 0.036, -0.15, 3],
-    [0.197, 0.14, 0.22, 0.040, 0, 5],
-    [0.197, 0.20, 0.19, 0.036, 0, 4],
-  ];
-  for (let i = 0; i < bookSpecs.length; i++) {
-    const [sy, bz, bh, bt, tilt, varIdx] = bookSpecs[i];
-    const bkMesh = new THREE.Mesh(
-      createBookGeometry(0.16, bh, bt, varIdx),
-      bookAtlasMat
-    );
-    bkMesh.position.set(-0.98 + 0.018, sy + bh / 2, -1.25 + bz);
-    bkMesh.rotation.x = tilt;
-    bkMesh.castShadow = true;
-    bkMesh.receiveShadow = true;
-    group.add(bkMesh);
-  }
+  // Sculpted Light-Toned Diverse Books, Manga Sets, Horizontal Stacks & Retro Games across all 4 West Bookcase Tiers
+  // Tier 1 (Y = 0.574): Full-width primary display shelf (Manga set + Literature + Philosophy + Horizontal stack + Cartridge)
+  populateRealisticBookTier({
+    parent: shelf,
+    axis: 'z',
+    spineSign: 1,
+    start: -0.40,
+    end: 0.40,
+    surfaceY: 0.574,
+    depthCenter: 0.016,
+    maxDepth: 0.21,
+    maxHeight: 0.31,
+    seed: 31,
+    includeMangaSet: true,
+    includeHorizontalStack: true,
+    includeRetroGames: true,
+  });
+  // Tier 2 (Y = 0.924): Left/center open bay beside the cream linen box
+  populateRealisticBookTier({
+    parent: shelf,
+    axis: 'z',
+    spineSign: 1,
+    start: -0.40,
+    end: 0.14,
+    surfaceY: 0.924,
+    depthCenter: 0.016,
+    maxDepth: 0.21,
+    maxHeight: 0.31,
+    seed: 67,
+    includeMangaSet: false,
+    includeHorizontalStack: true,
+    includeRetroGames: true,
+  });
+  // Tier 3 (Y = 1.274): Center/right open bay beside the sage linen box
+  populateRealisticBookTier({
+    parent: shelf,
+    axis: 'z',
+    spineSign: 1,
+    start: -0.14,
+    end: 0.40,
+    surfaceY: 1.274,
+    depthCenter: 0.016,
+    maxDepth: 0.21,
+    maxHeight: 0.31,
+    seed: 97,
+    includeMangaSet: true,
+    includeHorizontalStack: false,
+    includeRetroGames: true,
+  });
+  // Lower Cupboard Interior (Y = 0.197): Stored philosophy, design books & retro game boxes behind the white cupboard doors
+  populateRealisticBookTier({
+    parent: shelf,
+    axis: 'z',
+    spineSign: 1,
+    start: -0.38,
+    end: 0.38,
+    surfaceY: 0.197,
+    depthCenter: 0.004,
+    maxDepth: 0.20,
+    maxHeight: 0.32,
+    seed: 149,
+    includeMangaSet: false,
+    includeHorizontalStack: true,
+    includeRetroGames: true,
+  });
 
   // Interactive Lower Cupboard Doors on the Living Room Bookshelf Cabinet
   for (const sz of [-0.205, 0.205]) {
@@ -2359,11 +2684,286 @@ export function buildLivingRoom(ctx: RoomBuildContext, playDoorAudio: (open: boo
   tableLegsInst.computeBoundingSphere();
   group.add(tableLegsInst);
 
-  // Sculpted Multi-Part Moai Statue on Enlarged Coffee Table
-  const moai = createSculptedMoaiGroup(moaiMat, moaiDarkMat, outlines);
-  moai.position.set(0.10, 0.442, -0.22);
-  moai.scale.setScalar(0.88);
-  table.add(moai);
+  // 1) Sculpted Walnut & Brushed-Brass Headphone Stand + Over-Ear Studio Headphones
+  const headphoneStandGroup = new THREE.Group();
+  headphoneStandGroup.position.set(0.17, 0.442, -0.32);
+  headphoneStandGroup.rotation.y = -0.38;
+
+  const hpMetalMat = mat({ color: 0xd9c298, roughness: 0.28, metalness: 0.72, celStrength: 0.38 });
+  const hpShellMat = mat({ color: 0xf4ece2, roughness: 0.34, metalness: 0.08, celStrength: 0.42 });
+  const hpPadMat = mat({ color: 0x3b3538, roughness: 0.82, metalness: 0.02, celStrength: 0.45 });
+  const hpYokeMat = mat({ color: 0x8d8892, roughness: 0.30, metalness: 0.68, celStrength: 0.38 });
+
+  // Weighted chamfered walnut base + subtle recessed accessory tray lip
+  const hpBase = new THREE.Mesh(
+    createBeveledSlab(0.126, 0.018, 0.114, 0.022, 0.005),
+    darkOakMat
+  );
+  hpBase.position.y = 0.009;
+  hpBase.castShadow = true;
+  hpBase.receiveShadow = true;
+  outlines.addOutline(hpBase, 1.035);
+  headphoneStandGroup.add(hpBase);
+
+  const hpBaseTrim = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.020, 0.024, 0.008, 16),
+    hpMetalMat
+  );
+  hpBaseTrim.position.set(0, 0.021, -0.012);
+  headphoneStandGroup.add(hpBaseTrim);
+
+  // Curved slender brushed-brass upright stem + arched oak headband cradle
+  const hpStemCurve = new THREE.CatmullRomCurve3([
+    new THREE.Vector3(0, 0.022, -0.012),
+    new THREE.Vector3(0, 0.132, -0.018),
+    new THREE.Vector3(0, 0.228, -0.006),
+    new THREE.Vector3(0, 0.264, 0.004),
+  ]);
+  const hpStem = new THREE.Mesh(
+    new THREE.TubeGeometry(hpStemCurve, 18, 0.0062, 10, false),
+    hpMetalMat
+  );
+  hpStem.castShadow = true;
+  headphoneStandGroup.add(hpStem);
+
+  const hpCradleCurve = new THREE.CatmullRomCurve3([
+    new THREE.Vector3(-0.044, 0.252, 0.004),
+    new THREE.Vector3(-0.022, 0.267, 0.004),
+    new THREE.Vector3(0, 0.272, 0.004),
+    new THREE.Vector3(0.022, 0.267, 0.004),
+    new THREE.Vector3(0.044, 0.252, 0.004),
+  ]);
+  const hpCradle = new THREE.Mesh(
+    new THREE.TubeGeometry(hpCradleCurve, 14, 0.011, 8, false),
+    oakMat
+  );
+  hpCradle.scale.set(1.0, 0.58, 1.35);
+  hpCradle.castShadow = true;
+  headphoneStandGroup.add(hpCradle);
+
+  // Draped Over-Ear Studio Headphones resting cleanly on the cradle
+  const headphonesRig = new THREE.Group();
+  headphonesRig.position.set(0, 0.278, 0.006);
+
+  const headbandCurve = new THREE.CatmullRomCurve3([
+    new THREE.Vector3(-0.072, -0.106, 0),
+    new THREE.Vector3(-0.080, -0.042, 0),
+    new THREE.Vector3(-0.054, 0.004, 0),
+    new THREE.Vector3(0, 0.016, 0),
+    new THREE.Vector3(0.054, 0.004, 0),
+    new THREE.Vector3(0.080, -0.042, 0),
+    new THREE.Vector3(0.072, -0.106, 0),
+  ]);
+  const headbandOuter = new THREE.Mesh(
+    new THREE.TubeGeometry(headbandCurve, 28, 0.0105, 10, false),
+    hpShellMat
+  );
+  headbandOuter.scale.set(1.0, 1.0, 1.55);
+  headbandOuter.castShadow = true;
+  outlines.addOutline(headbandOuter, 1.03);
+  headphonesRig.add(headbandOuter);
+
+  const headbandCushion = new THREE.Mesh(
+    new THREE.TubeGeometry(headbandCurve, 24, 0.0082, 8, false),
+    hpPadMat
+  );
+  headbandCushion.position.y = -0.0045;
+  headbandCushion.scale.set(0.95, 0.94, 1.35);
+  headphonesRig.add(headbandCushion);
+
+  // Twin adjustable metal sliders, yokes, champagne-cream earcups & plush earpads
+  for (const side of [-1, 1] as const) {
+    const slider = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.0034, 0.0034, 0.036, 8),
+      hpYokeMat
+    );
+    slider.position.set(side * 0.074, -0.114, 0);
+    slider.rotation.z = side * 0.14;
+    headphonesRig.add(slider);
+
+    const yoke = new THREE.Mesh(
+      new THREE.TorusGeometry(0.028, 0.0034, 8, 16, Math.PI),
+      hpYokeMat
+    );
+    yoke.position.set(side * 0.070, -0.152, 0);
+    yoke.rotation.y = Math.PI / 2;
+    headphonesRig.add(yoke);
+
+    const earCupGroup = new THREE.Group();
+    earCupGroup.position.set(side * 0.066, -0.154, 0);
+    earCupGroup.rotation.z = side * -0.16;
+
+    // Oval sculpted champagne-ivory outer earcup dome
+    const cupDome = new THREE.Mesh(
+      new THREE.SphereGeometry(0.040, 20, 14),
+      hpShellMat
+    );
+    cupDome.scale.set(0.46, 1.12, 0.92);
+    cupDome.position.x = side * 0.011;
+    cupDome.castShadow = true;
+    outlines.addOutline(cupDome, 1.035);
+    earCupGroup.add(cupDome);
+
+    // Brushed-brass accent ring on outer earcup face
+    const cupRing = new THREE.Mesh(
+      new THREE.TorusGeometry(0.025, 0.0024, 8, 20),
+      hpMetalMat
+    );
+    cupRing.rotation.y = Math.PI / 2;
+    cupRing.scale.set(0.88, 1.12, 1.0);
+    cupRing.position.x = side * 0.028;
+    earCupGroup.add(cupRing);
+
+    // Plush matte leatherette oval earpad cushion
+    const earPad = new THREE.Mesh(
+      new THREE.TorusGeometry(0.030, 0.0125, 12, 22),
+      hpPadMat
+    );
+    earPad.rotation.y = Math.PI / 2;
+    earPad.scale.set(0.90, 1.14, 1.0);
+    earPad.position.x = side * -0.003;
+    earPad.castShadow = true;
+    earCupGroup.add(earPad);
+
+    // Acoustic inner driver fabric scrim
+    const scrim = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.028, 0.028, 0.004, 16),
+      cavityDarkMat
+    );
+    scrim.rotation.z = Math.PI / 2;
+    scrim.scale.set(1.0, 1.0, 0.88);
+    scrim.position.x = side * -0.001;
+    earCupGroup.add(scrim);
+
+    headphonesRig.add(earCupGroup);
+  }
+  headphoneStandGroup.add(headphonesRig);
+  table.add(headphoneStandGroup);
+
+  // 2) Refined Warm-Cream Ceramic & Beveled Honey-Oak Tissue Box (精致抽纸盒)
+  const tissueBoxGroup = new THREE.Group();
+  tissueBoxGroup.position.set(-0.07, 0.442, -0.22);
+  tissueBoxGroup.rotation.y = 0.16;
+
+  const tbW = 0.215;
+  const tbH = 0.088;
+  const tbD = 0.122;
+
+  const tissueCeramicMat = mat({
+    color: 0xf9f3ea,
+    roughness: 0.36,
+    metalness: 0.02,
+    celStrength: 0.40,
+  });
+  const tissuePaperMat = mat({
+    color: 0xfffdf9,
+    roughness: 0.94,
+    metalness: 0.0,
+    side: THREE.DoubleSide,
+    celStrength: 0.32,
+  });
+
+  // Subtle recessed felt base footpad so box floats crisp above coffee table
+  const tbFoot = new THREE.Mesh(
+    createBeveledBox(tbW - 0.016, 0.006, tbD - 0.016, 0.002, 1),
+    darkOakMat
+  );
+  tbFoot.position.y = 0.003;
+  tissueBoxGroup.add(tbFoot);
+
+  // Rounded matte warm-cream ceramic body with crisp brass front badge trim
+  const tbBody = new THREE.Mesh(
+    createBeveledBox(tbW, tbH - 0.014, tbD, 0.014, 3),
+    tissueCeramicMat
+  );
+  tbBody.position.y = 0.006 + (tbH - 0.014) / 2;
+  tbBody.castShadow = true;
+  tbBody.receiveShadow = true;
+  outlines.addOutline(tbBody, 1.03);
+  tissueBoxGroup.add(tbBody);
+
+  // Delicate horizontal decorative fluting rib & tiny brass nameplate on front face
+  const tbBrassPlate = new THREE.Mesh(
+    createBeveledBox(0.036, 0.010, 0.003, 0.001, 1),
+    hpMetalMat
+  );
+  tbBrassPlate.position.set(0, 0.044, tbD / 2 + 0.001);
+  tissueBoxGroup.add(tbBrassPlate);
+
+  // Warm beveled honey-oak top lid with recessed dark oval dispensing slot
+  const tbLid = new THREE.Mesh(
+    createBeveledSlab(tbW - 0.008, 0.014, tbD - 0.008, 0.016, 0.004),
+    oakMat
+  );
+  tbLid.position.y = tbH - 0.004;
+  tbLid.castShadow = true;
+  tbLid.receiveShadow = true;
+  outlines.addOutline(tbLid, 1.025);
+  tissueBoxGroup.add(tbLid);
+
+  const slotRim = new THREE.Mesh(
+    new THREE.TorusGeometry(0.022, 0.0026, 8, 20),
+    hpMetalMat
+  );
+  slotRim.rotation.x = Math.PI / 2;
+  slotRim.scale.set(2.35, 0.48, 1.0);
+  slotRim.position.y = tbH + 0.0036;
+  tissueBoxGroup.add(slotRim);
+
+  const slotOpening = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.020, 0.020, 0.003, 18),
+    cavityDarkMat
+  );
+  slotOpening.scale.set(2.25, 1.0, 0.44);
+  slotOpening.position.y = tbH + 0.0028;
+  tissueBoxGroup.add(slotOpening);
+
+  // Organically sculpted billowing 2-ply soft ivory tissue emerging gracefully from the slot
+  const buildTissueWave = (
+    w: number,
+    h: number,
+    tiltX: number,
+    tiltZ: number,
+    phase: number
+  ): THREE.BufferGeometry => {
+    const geo = new THREE.PlaneGeometry(w, h, 14, 12);
+    const pos = geo.attributes.position as THREE.BufferAttribute;
+    for (let vi = 0; vi < pos.count; vi++) {
+      const px = pos.getX(vi);
+      const py = pos.getY(vi);
+      const vNorm = (py + h * 0.5) / h; // 0 at slot base, 1 at soft ruffled peak
+      const uNorm = px / (w * 0.5);
+      // Pinch sharply inside the dispensing slot at vNorm = 0, flare softly outward toward top!
+      const pinch = 0.42 + 0.72 * Math.pow(vNorm, 0.75);
+      const xOut = px * pinch + Math.sin(vNorm * Math.PI * 1.15 + phase) * 0.008 * vNorm;
+      const yOut = py + h * 0.5 + (1 - Math.abs(uNorm)) * 0.016 * vNorm;
+      const flutter =
+        Math.sin(uNorm * 3.6 + phase) * 0.010 * vNorm * vNorm +
+        Math.cos(vNorm * 3.1 + phase * 0.7) * 0.008 * vNorm;
+      const zOut = flutter + tiltX * vNorm * vNorm * 0.042;
+      pos.setXYZ(vi, xOut + tiltZ * vNorm * 0.018, yOut, zOut);
+    }
+    geo.computeVertexNormals();
+    return geo;
+  };
+
+  const tissueSheetA = new THREE.Mesh(
+    buildTissueWave(0.102, 0.068, 0.72, -0.35, 0.4),
+    tissuePaperMat
+  );
+  tissueSheetA.position.set(0, tbH + 0.001, 0.002);
+  tissueSheetA.castShadow = true;
+  tissueBoxGroup.add(tissueSheetA);
+
+  const tissueSheetB = new THREE.Mesh(
+    buildTissueWave(0.088, 0.056, -0.58, 0.42, 2.2),
+    tissuePaperMat
+  );
+  tissueSheetB.position.set(0.004, tbH + 0.001, -0.002);
+  tissueSheetB.castShadow = true;
+  tissueBoxGroup.add(tissueSheetB);
+
+  table.add(tissueBoxGroup);
 
   // Standing Hardcover Artbook with Printed Title & Geometric Cover on Coffee Table
   const blueBookGroup = new THREE.Group();
@@ -2657,9 +3257,9 @@ export function buildLivingRoom(ctx: RoomBuildContext, playDoorAudio: (open: boo
     message: '宽大的实木茶几上放着一只双手柄控制器，长长的数据线越过地毯连向电视柜里的游戏机。旁边的冰饮还插着吸管，手柄握把甚至还带着一丝手心的余温。',
   }));
 
-  registerInteractable('liv_moai', '摩艾石像', '检查茶几摆件', 'living', moai, () => ({
-    title: '精雕摩艾石像',
-    message: '带倒角棱面的玄武岩雕像，深陷的眼窝正对着沙发。底座底下压着纸条：“只要你不离开这间屋子，一切都会是安全的。”',
+  registerInteractable('liv_headphone_stand', '胡桃木耳机架与头戴耳机', '检查茶几摆件', 'living', headphoneStandGroup, () => ({
+    title: '胡桃木黄铜耳机架与精致抽纸盒',
+    message: '黄铜支架上稳稳挂着一副象牙白复古监听头戴耳机，柔软的耳罩还带着淡淡的木质香气；旁边的陶瓷橡木盖抽纸盒里轻轻抽出一角素白纸巾，把茶几衬托得格外温馨利落。',
   }));
 
   // Small Tabletop Pens, Drafting Pencil & Brass Top/Dice Trinkets on Coffee Table
@@ -2739,13 +3339,22 @@ export function buildLivingRoom(ctx: RoomBuildContext, playDoorAudio: (open: boo
     reactivity: 0.72,
   });
   registerAmbientProp({
-    id: 'liv_table_moai',
+    id: 'liv_table_headphones',
     room: 'living',
-    mesh: moai,
-    worldPos: [4.72, 0.442, -5.47],
+    mesh: headphoneStandGroup,
+    worldPos: [4.79, 0.442, -5.57],
     kind: 'wobble',
-    maxDrift: 0.012,
-    reactivity: 0.62,
+    maxDrift: 0.010,
+    reactivity: 0.56,
+  });
+  registerAmbientProp({
+    id: 'liv_table_tissue_box',
+    room: 'living',
+    mesh: tissueBoxGroup,
+    worldPos: [4.55, 0.442, -5.47],
+    kind: 'slide',
+    maxDrift: 0.014,
+    reactivity: 0.68,
   });
 
   // =========================================================================
@@ -3412,7 +4021,7 @@ export function buildLivingRoom(ctx: RoomBuildContext, playDoorAudio: (open: boo
 
   // 3) Z-Neck Wooden Floor Lamp with Striped Conical Shade & Hanging Pull Chain (Screenshot 4!)
   const floorLamp = new THREE.Group();
-  floorLamp.position.set(0.18, 0, -9.48);
+  floorLamp.position.set(0.54, 0, -9.86);
   const flBase = new THREE.Mesh(
     new THREE.CylinderGeometry(0.17, 0.21, 0.042, 22),
     oakMat
@@ -3687,12 +4296,13 @@ export function buildLivingRoom(ctx: RoomBuildContext, playDoorAudio: (open: boo
     matBoard.position.z = 0.004;
     fg.add(matBoard);
 
-    // Non-emissive matte canvas art material so picture frames never blow out white under Bloom!
+    // Non-emissive matte archival canvas art material tinted to blend seamlessly into the living room wall
     const artMat = mat({
       map: artTex,
-      color: 0xf4ece6,
-      roughness: 0.90,
+      color: 0xe6dcd4,
+      roughness: 0.93,
       metalness: 0.0,
+      celStrength: 0.44,
     });
     const art = new THREE.Mesh(
       new THREE.PlaneGeometry(w - 0.13, h - 0.13),
@@ -3706,9 +4316,9 @@ export function buildLivingRoom(ctx: RoomBuildContext, playDoorAudio: (open: boo
 
   const artworks = textures.sofaArtworks;
   buildEclecticArtFrame(1.75, 2.08, -10.29, 0.88, 0.64, 0.022, 0x4a3531, artworks[0], 0.016);
-  buildEclecticArtFrame(2.82, 1.88, -10.29, 0.64, 0.86, -0.028, 0xc79654, artworks[1], 0.024);
-  buildEclecticArtFrame(3.68, 2.26, -10.29, 0.58, 0.58, 0.038, 0xd9b396, artworks[2], 0.085);
-  buildEclecticArtFrame(3.78, 1.56, -10.29, 0.52, 0.38, -0.020, 0x2e2636, artworks[3], 0.015);
+  buildEclecticArtFrame(2.82, 1.90, -10.29, 0.64, 0.84, -0.024, 0x9b7e5c, artworks[1], 0.020);
+  buildEclecticArtFrame(3.66, 2.26, -10.29, 0.54, 0.70, 0.028, 0x625a66, artworks[2], 0.022);
+  buildEclecticArtFrame(3.78, 1.50, -10.29, 0.52, 0.38, -0.020, 0x2e2636, artworks[3], 0.015);
 
   // =========================================================================
   // 10. LUSH BROAD-LEAF POTTED PLANT WITH INSTANCED FOLIAGE (X = 6.74, Z = -9.66, clear of Bathroom doorway)
@@ -3882,8 +4492,8 @@ export function buildLivingRoom(ctx: RoomBuildContext, playDoorAudio: (open: boo
   addBoxCollider('col_liv_plant', 6.74, 0.5, -9.66, 0.52, 1.2, 0.52);
 
   // =========================================================================
-  // 10B. LIVING ROOM CORNER STANDING BOOKSHELVES WITH COLORFUL BOOKS & ORNAMENTS
-  //      (客厅墙角带彩色书本的立式架子: SE Corner at (6.78, 0, -0.68) & NW Corner at (-0.82, 0, -9.82))
+  // 10B. SE CORNER 5-TIER STANDING BOOKSHELF (Preserved Oak Frame + Sculpted Books)
+  //      & MODERN VINYL TURNTABLE MEDIA CABINET + BOOKSHELF BESIDE SMALL SOFA
   // =========================================================================
   const buildStandingCornerBookRack = (
     originX: number,
@@ -3927,9 +4537,10 @@ export function buildLivingRoom(ctx: RoomBuildContext, playDoorAudio: (open: boo
 
     const tierBoardGeo = createBeveledSlab(shelfWidth, 0.026, shelfDepth, 0.016, 0.006);
     const sideRailGeo = createBeveledBox(0.020, 0.022, shelfDepth - 0.04, 0.003, 1);
+    const tierGap = (totalHeight - 0.22) / (numTiers - 1);
 
     for (let t = 0; t < numTiers; t++) {
-      const tierY = 0.14 + t * ((totalHeight - 0.22) / (numTiers - 1));
+      const tierY = 0.14 + t * tierGap;
       const board = new THREE.Mesh(tierBoardGeo, oakMat);
       board.position.y = tierY;
       board.castShadow = true;
@@ -3943,60 +4554,59 @@ export function buildLivingRoom(ctx: RoomBuildContext, playDoorAudio: (open: boo
         rackGroup.add(sRail);
       }
 
-      // Populate lower & middle tiers with matte cloth/paper books featuring printed titles & geometric covers
+      // Populate lower & middle tiers with naturally varied sculpted light-toned books, manga sets & retro games
       if (t < numTiers - 1) {
-        let curX = -halfW + 0.055;
-        let bIdx = 0;
-        while (curX < halfW - 0.08) {
-          const k = seedOffset + t * 11 + bIdx * 7;
-          const bThick = 0.028 + (k % 3) * 0.006;
-          const bHeight = 0.168 + (k % 4) * 0.018;
-          const bDepth = shelfDepth * (0.66 + (k % 3) * 0.04);
-          const isLeaning = curX + bThick * 2.2 >= halfW - 0.08;
-          const leanAngle = isLeaning ? -0.18 : 0.0;
-
-          const bookMesh = new THREE.Mesh(
-            createBookGeometry(bThick, bHeight, bDepth, k % 8),
-            bookAtlasMat
-          );
-          bookMesh.position.set(
-            curX + bThick / 2 + (isLeaning ? 0.018 : 0),
-            tierY + 0.013 + (bHeight * Math.cos(leanAngle)) / 2,
-            0.01
-          );
-          bookMesh.rotation.z = leanAngle;
-          bookMesh.castShadow = true;
-          bookMesh.receiveShadow = true;
-          rackGroup.add(bookMesh);
-
-          curX += bThick + 0.004 + (isLeaning ? 0.04 : 0);
-          bIdx++;
-        }
+        populateRealisticBookTier({
+          parent: rackGroup,
+          axis: 'x',
+          spineSign: 1,
+          start: -halfW + 0.026,
+          end: halfW - 0.026,
+          surfaceY: tierY + 0.013,
+          depthCenter: 0.012,
+          maxDepth: shelfDepth * 0.72,
+          maxHeight: tierGap - 0.026,
+          seed: seedOffset * 37 + t * 23,
+          includeMangaSet: t === 1,
+          includeHorizontalStack: t === 0 || t === 2,
+          includeRetroGames: true,
+        });
       } else {
-        // Top tier ornament: mini matte ceramic planter pot with succulent & stacked printed-cover artbooks
+        // Top tier ornament: mini matte ceramic planter pot with succulent, stacked light-toned artbooks & retro cartridge
         const topBook1 = new THREE.Mesh(
-          createBookGeometry(0.18, 0.028, 0.14, (seedOffset + 1) % 8),
+          createBookGeometry(0.185, 0.026, 0.142, 6),
           bookAtlasMat
         );
-        topBook1.position.set(-0.08, tierY + 0.027, 0);
+        topBook1.position.set(-0.085, tierY + 0.026, 0);
         topBook1.rotation.y = 0.14;
         topBook1.castShadow = true;
+        topBook1.receiveShadow = true;
         rackGroup.add(topBook1);
 
         const topBook2 = new THREE.Mesh(
-          createBookGeometry(0.16, 0.024, 0.125, (seedOffset + 4) % 8),
+          createBookGeometry(0.162, 0.022, 0.126, 10),
           bookAtlasMat
         );
-        topBook2.position.set(-0.08, tierY + 0.053, 0.005);
+        topBook2.position.set(-0.085, tierY + 0.050, 0.005);
         topBook2.rotation.y = -0.18;
         topBook2.castShadow = true;
+        topBook2.receiveShadow = true;
         rackGroup.add(topBook2);
+
+        const topCart = new THREE.Mesh(
+          createRetroCartridgeGeometry(0.108, 0.015, 0.076),
+          retroCartridgeMats[1]
+        );
+        topCart.position.set(-0.082, tierY + 0.068, 0.008);
+        topCart.rotation.y = 0.28;
+        topCart.castShadow = true;
+        rackGroup.add(topCart);
 
         const miniPot = new THREE.Mesh(
           new THREE.CylinderGeometry(0.048, 0.038, 0.068, 14),
           ceramicMat
         );
-        miniPot.position.set(0.09, tierY + 0.047, 0);
+        miniPot.position.set(0.10, tierY + 0.047, 0);
         miniPot.castShadow = true;
         rackGroup.add(miniPot);
 
@@ -4005,7 +4615,7 @@ export function buildLivingRoom(ctx: RoomBuildContext, playDoorAudio: (open: boo
           plantLeafLightMat
         );
         succulent.scale.set(1.1, 0.72, 1.1);
-        succulent.position.set(0.09, tierY + 0.092, 0);
+        succulent.position.set(0.10, tierY + 0.092, 0);
         rackGroup.add(succulent);
       }
     }
@@ -4015,12 +4625,879 @@ export function buildLivingRoom(ctx: RoomBuildContext, playDoorAudio: (open: boo
   };
 
   // 1) 5-Tier Standing Corner Bookshelf in Living Room SE Corner (X = 6.78, Z = -0.68) facing into room
-  const seCornerShelf = buildStandingCornerBookRack(6.78, -0.68, -Math.PI * 0.72, 5, 0.62, 0.32, 1.54, 3);
+  buildStandingCornerBookRack(6.78, -0.68, -Math.PI * 0.72, 5, 0.62, 0.32, 1.54, 3);
   addBoxCollider('col_liv_se_book_rack', 6.78, 0.78, -0.68, 0.64, 1.56, 0.64);
 
-  // 2) 4-Tier Standing Corner Book Rack in Living Room NW Alcove Corner (X = -0.82, Z = -9.82)
-  buildStandingCornerBookRack(-0.82, -9.82, Math.PI * 0.25, 4, 0.54, 0.30, 1.24, 19);
-  addBoxCollider('col_liv_nw_book_rack', -0.82, 0.62, -9.82, 0.56, 1.24, 0.56);
+  // 2) MODERN VINYL TURNTABLE MEDIA CABINET + BOOKSHELF BESIDE THE SMALL SOFA
+  //    Tucked diagonally flush into NW corner (X = -0.38, Z = -9.72), matching the small sofa orientation (rotation.y = 0.52)!
+  const vinylCabinet = new THREE.Group();
+  vinylCabinet.name = 'LivingVinylCabinet';
+  vinylCabinet.position.set(-0.38, 0, -9.72);
+  vinylCabinet.rotation.y = 0.52; // Same diagonal orientation as armchair (rotation.y = 0.52)
+
+  const cabW = 1.36;
+  const cabD = 0.44;
+  const legH = 0.16;
+  const cabTopY = 0.84;
+  const cabBodyH = cabTopY - legH; // 0.68m
+
+  const cabMetalMat = mat({
+    color: 0x3b3d46,
+    roughness: 0.42,
+    metalness: 0.68,
+    celStrength: 0.45,
+  });
+  const brushedAlumMat = mat({
+    color: 0xd6dae0,
+    roughness: 0.28,
+    metalness: 0.78,
+    celStrength: 0.38,
+  });
+  const turntableWalnutMat = mat({
+    map: textures.furnitureOak,
+    bumpMap: textures.furnitureWoodBump,
+    bumpScale: 0.005,
+    color: 0xd9a87c,
+    roughness: 0.46,
+    metalness: 0.02,
+    woodLacquer: 0.56,
+  });
+  const turntableDeckCreamMat = mat({
+    color: 0xf4eee6,
+    roughness: 0.50,
+    metalness: 0.04,
+    celStrength: 0.40,
+  });
+  const vinylDiscMat = mat({
+    color: 0x181a21,
+    roughness: 0.22,
+    metalness: 0.22,
+    celStrength: 0.35,
+  });
+  const vinylGrooveMat = mat({
+    color: 0x2d323e,
+    roughness: 0.18,
+    metalness: 0.38,
+  });
+  const ampChassisMat = mat({
+    color: 0x2d313b,
+    roughness: 0.38,
+    metalness: 0.62,
+    celStrength: 0.42,
+  });
+  const speakerGrilleMat = mat({
+    map: textures.plushFabric,
+    bumpMap: textures.plushBump,
+    bumpScale: 0.010,
+    color: 0xede5d7,
+    roughness: 0.92,
+    metalness: 0.0,
+    fabricCream: 0.85,
+  });
+
+  // Minimalist matte-charcoal steel base frame with 4 tapered support legs & brushed-brass ferrules
+  for (const [lx, lz] of [
+    [-cabW / 2 + 0.08, -cabD / 2 + 0.06],
+    [cabW / 2 - 0.08, -cabD / 2 + 0.06],
+    [-cabW / 2 + 0.08, cabD / 2 - 0.06],
+    [cabW / 2 - 0.08, cabD / 2 - 0.06],
+  ] as const) {
+    const leg = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.015, 0.011, legH - 0.018, 12),
+      cabMetalMat
+    );
+    leg.position.set(lx, legH / 2 + 0.009, lz);
+    leg.castShadow = true;
+    vinylCabinet.add(leg);
+
+    const ferrule = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.0115, 0.010, 0.022, 12),
+      handleBrassMat
+    );
+    ferrule.position.set(lx, 0.011, lz);
+    vinylCabinet.add(ferrule);
+  }
+  // Center support leg & slim metal under-frame rails for sturdy modern proportion
+  const centerLeg = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.013, 0.010, legH - 0.018, 10),
+    cabMetalMat
+  );
+  centerLeg.position.set(0.17, legH / 2 + 0.009, 0);
+  vinylCabinet.add(centerLeg);
+
+  for (const rz of [-cabD / 2 + 0.06, cabD / 2 - 0.06]) {
+    const underRail = new THREE.Mesh(
+      new THREE.BoxGeometry(cabW - 0.16, 0.020, 0.020),
+      cabMetalMat
+    );
+    underRail.position.set(0, legH - 0.014, rz);
+    vinylCabinet.add(underRail);
+  }
+  for (const rx of [-cabW / 2 + 0.08, cabW / 2 - 0.08]) {
+    const sideTie = new THREE.Mesh(
+      new THREE.BoxGeometry(0.020, 0.018, cabD - 0.12),
+      cabMetalMat
+    );
+    sideTie.position.set(rx, legH - 0.014, 0);
+    vinylCabinet.add(sideTie);
+  }
+
+  // Warm Honey-Oak Outer Carcass (Top slab, bottom deck, side cheeks, warm back panel)
+  const cabTopSlab = new THREE.Mesh(
+    createBeveledSlab(cabW + 0.024, 0.032, cabD + 0.018, 0.022, 0.008),
+    oakMat
+  );
+  cabTopSlab.position.y = cabTopY - 0.016;
+  cabTopSlab.castShadow = true;
+  cabTopSlab.receiveShadow = true;
+  outlines.addOutline(cabTopSlab, 1.014);
+  vinylCabinet.add(cabTopSlab);
+
+  const cabBotDeck = new THREE.Mesh(
+    createBeveledBox(cabW, 0.028, cabD, 0.007, 2),
+    oakMat
+  );
+  cabBotDeck.position.y = legH + 0.014;
+  cabBotDeck.castShadow = true;
+  cabBotDeck.receiveShadow = true;
+  vinylCabinet.add(cabBotDeck);
+
+  for (const sx of [-cabW / 2 + 0.015, cabW / 2 - 0.015]) {
+    const cheek = new THREE.Mesh(
+      createBeveledBox(0.030, cabBodyH - 0.028, cabD - 0.004, 0.006, 2),
+      oakMat
+    );
+    cheek.position.set(sx, legH + cabBodyH / 2, 0);
+    cheek.castShadow = true;
+    cheek.receiveShadow = true;
+    outlines.addOutline(cheek, 1.014);
+    vinylCabinet.add(cheek);
+  }
+
+  const cabBackPanel = new THREE.Mesh(
+    createBeveledBox(cabW - 0.04, cabBodyH - 0.04, 0.018, 0.003, 1),
+    cavityDarkMat
+  );
+  cabBackPanel.position.set(0, legH + cabBodyH / 2, -cabD / 2 + 0.012);
+  cabBackPanel.receiveShadow = true;
+  vinylCabinet.add(cabBackPanel);
+
+  // Architectural Interior Partitions:
+  // Main vertical divider separating Left Vinyl+Book zone (X = -0.65..+0.17) and Right Bookshelf zone (X = +0.19..+0.65)
+  const mainDivider = new THREE.Mesh(
+    createBeveledBox(0.024, cabBodyH - 0.052, cabD - 0.036, 0.005, 2),
+    oakMat
+  );
+  mainDivider.position.set(0.18, legH + cabBodyH / 2, 0.004);
+  mainDivider.castShadow = true;
+  mainDivider.receiveShadow = true;
+  vinylCabinet.add(mainDivider);
+
+  // Left Horizontal Shelf at Y = 0.464 -> Upper Vinyl Cubbies (inner H = 0.348m for 12" LPs), Lower-Left Book Bay (H = 0.264m)
+  const leftMidShelf = new THREE.Mesh(
+    createBeveledBox(0.82, 0.024, cabD - 0.036, 0.005, 2),
+    oakMat
+  );
+  leftMidShelf.position.set(-0.24, 0.464, 0.004);
+  leftMidShelf.castShadow = true;
+  leftMidShelf.receiveShadow = true;
+  vinylCabinet.add(leftMidShelf);
+
+  // Center vertical divider inside upper vinyl bay + 2 slim brushed-brass wire record dividers
+  const vinylMidDiv = new THREE.Mesh(
+    createBeveledBox(0.022, 0.348, cabD - 0.042, 0.004, 2),
+    oakMat
+  );
+  vinylMidDiv.position.set(-0.24, 0.650, 0.004);
+  vinylMidDiv.castShadow = true;
+  vinylCabinet.add(vinylMidDiv);
+
+  for (const wx of [-0.445, -0.035]) {
+    const wireRodV = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.0032, 0.0032, 0.25, 8),
+      handleBrassMat
+    );
+    wireRodV.position.set(wx, 0.60, 0.09);
+    vinylCabinet.add(wireRodV);
+    const wireRodTop = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.0032, 0.0032, 0.24, 8),
+      handleBrassMat
+    );
+    wireRodTop.rotation.x = Math.PI / 2;
+    wireRodTop.position.set(wx, 0.725, -0.03);
+    vinylCabinet.add(wireRodTop);
+  }
+
+  // Right Horizontal Shelf at Y = 0.50 -> Two balanced modern bookshelf cubbies
+  const rightMidShelf = new THREE.Mesh(
+    createBeveledBox(0.46, 0.024, cabD - 0.036, 0.005, 2),
+    oakMat
+  );
+  rightMidShelf.position.set(0.422, 0.50, 0.004);
+  rightMidShelf.castShadow = true;
+  rightMidShelf.receiveShadow = true;
+  vinylCabinet.add(rightMidShelf);
+
+  // PACK THE TWO TALL VINYL CUBBIES WITH COLORFUL, ORGANICALLY OFFSET 12-INCH VINYL LP RECORDS
+  const innerSleevePaperMat = mat({ color: 0xf7f2e8, roughness: 0.88, celStrength: 0.38 });
+  const vinylBayRanges: [number, number, number][] = [
+    [-0.640, -0.456, 11], // Far-left sub-bay
+    [-0.434, -0.258, 29], // Mid-left sub-bay
+    [-0.222, -0.046, 47], // Mid-right sub-bay
+    [-0.024, 0.158, 61],  // Center-right sub-bay
+  ];
+  const vinylFloorY = 0.476;
+  for (let b = 0; b < vinylBayRanges.length; b++) {
+    const [bx0, bx1, bSeed] = vinylBayRanges[b];
+    let vx = bx0 + 0.010;
+    let rIdx = 0;
+    while (vx < bx1 - 0.018) {
+      const hVal = ((bSeed * 31 + rIdx * 17) * 2654435761) >>> 0;
+      const rf1 = (hVal & 0xff) / 255;
+      const rf2 = ((hVal >> 8) & 0xff) / 255;
+      const rf3 = ((hVal >> 16) & 0xff) / 255;
+
+      const sleeveThick = 0.0062 + rf1 * 0.0038;
+      const sleeveSize = 0.312 + (rf2 - 0.5) * 0.006;
+      const variantIdx = (b * 3 + rIdx + Math.floor(rf3 * 3)) % 8;
+
+      const isEndLean = vx + sleeveThick + 0.032 >= bx1 && rIdx >= 3;
+      const leanAngle = isEndLean ? -(0.11 + rf1 * 0.06) : (rf2 - 0.5) * 0.035;
+      const extraSpan = isEndLean ? Math.abs(Math.sin(leanAngle)) * sleeveSize * 0.45 : 0;
+      if (vx + sleeveThick + extraSpan > bx1 - 0.004) break;
+
+      const pullOutZ = 0.018 + rf3 * 0.034; // Varied staggered sleeve edges!
+      const lpMesh = new THREE.Mesh(
+        createVinylSleeveGeometry(sleeveThick, sleeveSize, variantIdx),
+        vinylSleeveMat
+      );
+      lpMesh.position.set(
+        vx + sleeveThick * 0.5 + extraSpan * 0.42,
+        vinylFloorY + (sleeveSize * Math.cos(leanAngle)) * 0.5 + 0.002,
+        pullOutZ
+      );
+      lpMesh.rotation.z = leanAngle;
+      lpMesh.castShadow = true;
+      lpMesh.receiveShadow = true;
+      vinylCabinet.add(lpMesh);
+
+      // Subtle paper inner sleeve peeking slightly on every ~4th record for organic realism
+      if (rIdx % 4 === 1 && !isEndLean) {
+        const innerPeek = new THREE.Mesh(
+          new THREE.BoxGeometry(0.0022, sleeveSize * 0.96, 0.012),
+          innerSleevePaperMat
+        );
+        innerPeek.position.set(
+          vx + sleeveThick * 0.5,
+          vinylFloorY + sleeveSize * 0.49,
+          pullOutZ + sleeveSize * 0.5 + 0.003
+        );
+        vinylCabinet.add(innerPeek);
+      }
+
+      vx += sleeveThick + 0.0032 + rf2 * 0.0035 + extraSpan;
+      rIdx++;
+      if (isEndLean) break;
+    }
+  }
+
+  // POPULATE THE 3 BOOKSHELF CUBBIES OF THE VINYL CABINET WITH SCULPTED LIGHT-TONED BOOKS & RETRO GAMES
+  // 1) Lower-Left Wide Bay (Y = 0.188 .. 0.452): Manga set + Literature + Philosophy + Horizontal stack + Retro cartridge
+  populateRealisticBookTier({
+    parent: vinylCabinet,
+    axis: 'x',
+    spineSign: 1,
+    start: -0.638,
+    end: 0.156,
+    surfaceY: legH + 0.028,
+    depthCenter: 0.055,
+    maxDepth: 0.24,
+    maxHeight: 0.260,
+    seed: 401,
+    includeMangaSet: true,
+    includeHorizontalStack: true,
+    includeRetroGames: true,
+  });
+  // 2) Upper-Right Book Cubby (Y = 0.512 .. 0.808): Tall design manuals, philosophy & leaning books
+  populateRealisticBookTier({
+    parent: vinylCabinet,
+    axis: 'x',
+    spineSign: 1,
+    start: 0.204,
+    end: 0.638,
+    surfaceY: 0.512,
+    depthCenter: 0.055,
+    maxDepth: 0.24,
+    maxHeight: 0.294,
+    seed: 509,
+    includeMangaSet: false,
+    includeHorizontalStack: true,
+    includeRetroGames: true,
+  });
+  // 3) Lower-Right Book Cubby (Y = 0.188 .. 0.488): Matched manga volumes + retro game cases + literature
+  populateRealisticBookTier({
+    parent: vinylCabinet,
+    axis: 'x',
+    spineSign: 1,
+    start: 0.204,
+    end: 0.638,
+    surfaceY: legH + 0.028,
+    depthCenter: 0.055,
+    maxDepth: 0.24,
+    maxHeight: 0.296,
+    seed: 613,
+    includeMangaSet: true,
+    includeHorizontalStack: false,
+    includeRetroGames: true,
+  });
+
+  // =========================================================================
+  // TABLETOP HI-FI MODERN VINYL TURNTABLE (local X = -0.32, Y = 0.84, Z = 0.01)
+  // =========================================================================
+  const turntableGroup = new THREE.Group();
+  turntableGroup.name = 'LivingVinylTurntable';
+  turntableGroup.position.set(-0.32, cabTopY, 0.01);
+  turntableGroup.userData.dynamic = true;
+
+  // 4 vibration-damping brass-ringed isolation feet
+  for (const [fx, fz] of [
+    [-0.19, -0.145],
+    [0.19, -0.145],
+    [-0.19, 0.145],
+    [0.19, 0.145],
+  ] as const) {
+    const foot = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.016, 0.018, 0.014, 14),
+      cabMetalMat
+    );
+    foot.position.set(fx, 0.007, fz);
+    turntableGroup.add(foot);
+
+    const footRing = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.0175, 0.0175, 0.004, 14),
+      handleBrassMat
+    );
+    footRing.position.set(fx, 0.011, fz);
+    turntableGroup.add(footRing);
+  }
+
+  // Two-tier modern plinth: warm walnut/oak body + crisp satin-ivory top trim plate
+  const plinthBase = new THREE.Mesh(
+    createBeveledBox(0.448, 0.042, 0.356, 0.008, 2),
+    turntableWalnutMat
+  );
+  plinthBase.position.y = 0.035;
+  plinthBase.castShadow = true;
+  plinthBase.receiveShadow = true;
+  outlines.addOutline(plinthBase, 1.015);
+  turntableGroup.add(plinthBase);
+
+  const plinthDeck = new THREE.Mesh(
+    createBeveledBox(0.432, 0.008, 0.340, 0.003, 2),
+    turntableDeckCreamMat
+  );
+  plinthDeck.position.y = 0.058;
+  plinthDeck.receiveShadow = true;
+  turntableGroup.add(plinthDeck);
+
+  // Rotary brushed-brass speed/power knob (33/45 RPM) & glowing micro indicator LED (front-left)
+  const speedKnob = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.016, 0.017, 0.014, 18),
+    handleBrassMat
+  );
+  speedKnob.position.set(-0.184, 0.068, 0.132);
+  turntableGroup.add(speedKnob);
+
+  const ledBezel = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.0055, 0.0055, 0.004, 10),
+    brushedAlumMat
+  );
+  ledBezel.position.set(-0.152, 0.063, 0.138);
+  turntableGroup.add(ledBezel);
+
+  const turntableLedMat = new THREE.MeshBasicMaterial({ color: 0xffb866 });
+  const ledDot = new THREE.Mesh(new THREE.SphereGeometry(0.0038, 10, 8), turntableLedMat);
+  ledDot.position.set(-0.152, 0.0655, 0.138);
+  turntableGroup.add(ledDot);
+
+  // Subtle brushed aluminum pitch slider beside tonearm
+  const pitchSlot = new THREE.Mesh(
+    new THREE.BoxGeometry(0.008, 0.003, 0.056),
+    cabMetalMat
+  );
+  pitchSlot.position.set(0.182, 0.063, 0.088);
+  turntableGroup.add(pitchSlot);
+  const pitchFader = new THREE.Mesh(
+    new THREE.BoxGeometry(0.015, 0.009, 0.012),
+    brushedAlumMat
+  );
+  pitchFader.position.set(0.182, 0.067, 0.084);
+  turntableGroup.add(pitchFader);
+
+  // SPINNING PLATTER + GROOVED 12-INCH VINYL RECORD + COLORED CENTER LABEL
+  const platterGroup = new THREE.Group();
+  platterGroup.position.set(-0.044, 0.062, 0.006);
+  platterGroup.userData.dynamic = true;
+
+  const alumPlatter = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.151, 0.154, 0.014, 40),
+    brushedAlumMat
+  );
+  alumPlatter.position.y = 0.007;
+  alumPlatter.castShadow = true;
+  alumPlatter.receiveShadow = true;
+  platterGroup.add(alumPlatter);
+
+  const slipMat = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.147, 0.147, 0.003, 36),
+    cabMetalMat
+  );
+  slipMat.position.y = 0.015;
+  platterGroup.add(slipMat);
+
+  const vinylDisc = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.146, 0.146, 0.0036, 44),
+    vinylDiscMat
+  );
+  vinylDisc.position.y = 0.0182;
+  vinylDisc.receiveShadow = true;
+  platterGroup.add(vinylDisc);
+
+  // Fine concentric specular micro-grooves across the playing surface
+  for (const gr of [0.138, 0.118, 0.096, 0.072]) {
+    const grooveRing = new THREE.Mesh(
+      new THREE.TorusGeometry(gr, 0.0009, 6, 48),
+      vinylGrooveMat
+    );
+    grooveRing.rotation.x = Math.PI / 2;
+    grooveRing.position.y = 0.0202;
+    platterGroup.add(grooveRing);
+  }
+
+  // Colored Center Paper Label (updates dynamically per Lo-Fi track!)
+  const initialTrack = LOFI_TRACKS[0];
+  const recordLabelMat = new THREE.MeshStandardMaterial({
+    color: initialTrack.labelHex,
+    roughness: 0.72,
+    metalness: 0.0,
+  });
+  const recordLabelAccentMat = new THREE.MeshStandardMaterial({
+    color: initialTrack.accentHex,
+    roughness: 0.65,
+    metalness: 0.04,
+  });
+  const centerLabel = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.049, 0.049, 0.0012, 28),
+    recordLabelMat
+  );
+  centerLabel.position.y = 0.0204;
+  platterGroup.add(centerLabel);
+
+  const labelAccentArc = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.048, 0.048, 0.0015, 24, 1, false, 0, Math.PI * 0.92),
+    recordLabelAccentMat
+  );
+  labelAccentArc.position.y = 0.0207;
+  platterGroup.add(labelAccentArc);
+
+  // Inner ring + printed white stripe marker (makes 33⅓ RPM spin visibly readable!)
+  const labelMarkerBar = new THREE.Mesh(
+    new THREE.BoxGeometry(0.036, 0.0012, 0.0045),
+    turntableDeckCreamMat
+  );
+  labelMarkerBar.position.set(0.016, 0.0214, 0.008);
+  platterGroup.add(labelMarkerBar);
+
+  const spindle = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.0036, 0.0036, 0.016, 12),
+    brushedAlumMat
+  );
+  spindle.position.y = 0.027;
+  platterGroup.add(spindle);
+
+  turntableGroup.add(platterGroup);
+
+  // TONEARM BASE + PIVOTING S-CURVED METAL TONEARM + HEADSHELL & STYLUS
+  const tonearmBaseRing = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.034, 0.038, 0.012, 24),
+    cabMetalMat
+  );
+  tonearmBaseRing.position.set(0.156, 0.066, -0.098);
+  turntableGroup.add(tonearmBaseRing);
+
+  const tonearmRestPost = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.0035, 0.004, 0.024, 8),
+    cabMetalMat
+  );
+  tonearmRestPost.position.set(0.158, 0.072, -0.016);
+  turntableGroup.add(tonearmRestPost);
+  const tonearmRestCradle = new THREE.Mesh(
+    new THREE.TorusGeometry(0.006, 0.0018, 6, 10, Math.PI),
+    cabMetalMat
+  );
+  tonearmRestCradle.rotation.z = Math.PI;
+  tonearmRestCradle.position.set(0.158, 0.085, -0.016);
+  turntableGroup.add(tonearmRestCradle);
+
+  const tonearmPivot = new THREE.Group();
+  tonearmPivot.position.set(0.156, 0.088, -0.098);
+  tonearmPivot.userData.dynamic = true;
+
+  const gimbal = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.016, 0.016, 0.024, 16),
+    brushedAlumMat
+  );
+  tonearmPivot.add(gimbal);
+
+  const counterweight = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.013, 0.013, 0.024, 16),
+    brushedAlumMat
+  );
+  counterweight.rotation.x = Math.PI / 2;
+  counterweight.position.set(0, 0.002, -0.036);
+  tonearmPivot.add(counterweight);
+
+  // Graceful S-curved aluminum tonearm sweeping from gimbal toward platter groove
+  const armCurve = new THREE.CatmullRomCurve3([
+    new THREE.Vector3(0, 0.002, -0.044),
+    new THREE.Vector3(0, 0.002, 0.048),
+    new THREE.Vector3(0.008, 0.002, 0.112),
+    new THREE.Vector3(-0.008, 0.001, 0.168),
+    new THREE.Vector3(-0.026, -0.002, 0.202),
+  ]);
+  const armTube = new THREE.Mesh(
+    new THREE.TubeGeometry(armCurve, 22, 0.0032, 8, false),
+    brushedAlumMat
+  );
+  armTube.castShadow = true;
+  tonearmPivot.add(armTube);
+
+  // Matte-charcoal angled headshell + brass finger lift + ruby cartridge
+  const headshell = new THREE.Mesh(
+    createBeveledBox(0.015, 0.010, 0.032, 0.002, 1),
+    cabMetalMat
+  );
+  headshell.position.set(-0.032, -0.003, 0.214);
+  headshell.rotation.y = -0.36;
+  tonearmPivot.add(headshell);
+
+  const fingerLift = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.0012, 0.0012, 0.018, 6),
+    handleBrassMat
+  );
+  fingerLift.rotation.z = Math.PI / 2;
+  fingerLift.position.set(-0.020, -0.001, 0.210);
+  tonearmPivot.add(fingerLift);
+
+  const cartridgeBody = new THREE.Mesh(
+    new THREE.BoxGeometry(0.011, 0.009, 0.018),
+    handleBrassMat
+  );
+  cartridgeBody.position.set(-0.032, -0.009, 0.215);
+  cartridgeBody.rotation.y = -0.36;
+  tonearmPivot.add(cartridgeBody);
+
+  turntableGroup.add(tonearmPivot);
+
+  // HINGED SEMI-TRANSPARENT OPTICAL ACRYLIC DUST COVER (Propped slightly open ~25° on twin chrome hinges!)
+  for (const hx of [-0.155, 0.155]) {
+    const hinge = new THREE.Mesh(
+      createBeveledBox(0.028, 0.022, 0.014, 0.003, 1),
+      brushedAlumMat
+    );
+    hinge.position.set(hx, 0.056, -0.178);
+    turntableGroup.add(hinge);
+  }
+  const acrylicGlassMat = createArchitecturalGlassMaterial(uniforms, {
+    tintHex: 0x4e525c,
+    edgeTintHex: 0x2f333c,
+    baseOpacity: 0.34,
+    maxFresnelOpacity: 0.68,
+    bevelWidth: 0.045,
+  });
+  const dustCoverPivot = new THREE.Group();
+  dustCoverPivot.position.set(0, 0.062, -0.176);
+  dustCoverPivot.rotation.x = -0.44; // Propped cleanly open ~25 degrees!
+  dustCoverPivot.userData.dynamic = true;
+
+  const dcW = 0.444;
+  const dcH = 0.068;
+  const dcD = 0.352;
+  const dcT = 0.0042;
+  const acrylicPanes: [number, number, number, number, number, number][] = [
+    [0, dcH, dcD / 2, dcW, dcT, dcD],                 // Top sheet
+    [0, dcH / 2, dcD, dcW, dcH, dcT],                 // Front wall
+    [0, dcH / 2, 0, dcW, dcH, dcT],                   // Rear wall
+    [-dcW / 2, dcH / 2, dcD / 2, dcT, dcH, dcD],      // Left wall
+    [dcW / 2, dcH / 2, dcD / 2, dcT, dcH, dcD],       // Right wall
+  ];
+  for (const [px, py, pz, pw, ph, pd] of acrylicPanes) {
+    const pane = new THREE.Mesh(new THREE.BoxGeometry(pw, ph, pd), acrylicGlassMat);
+    pane.position.set(px, py, pz);
+    pane.castShadow = false;
+    pane.receiveShadow = false;
+    dustCoverPivot.add(pane);
+  }
+  turntableGroup.add(dustCoverPivot);
+  vinylCabinet.add(turntableGroup);
+
+  // =========================================================================
+  // "NOW PLAYING" OAK & BRASS VINYL DISPLAY EASEL (local X = +0.13, Y = 0.84)
+  // =========================================================================
+  const easelGroup = new THREE.Group();
+  easelGroup.position.set(0.13, cabTopY, -0.02);
+  easelGroup.userData.dynamic = true;
+
+  const easelBase = new THREE.Mesh(
+    createBeveledBox(0.22, 0.022, 0.092, 0.005, 2),
+    oakMat
+  );
+  easelBase.position.y = 0.011;
+  easelBase.castShadow = true;
+  easelBase.receiveShadow = true;
+  easelGroup.add(easelBase);
+
+  const easelBrassBar = new THREE.Mesh(
+    createBeveledBox(0.14, 0.008, 0.005, 0.001, 1),
+    handleBrassMat
+  );
+  easelBrassBar.position.set(0, 0.012, 0.047);
+  easelGroup.add(easelBrassBar);
+
+  for (const rx of [-0.068, 0.068]) {
+    const easelRod = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.0032, 0.0032, 0.22, 8),
+      handleBrassMat
+    );
+    easelRod.position.set(rx, 0.115, -0.036);
+    easelRod.rotation.x = -0.22;
+    easelGroup.add(easelRod);
+  }
+
+  // Dynamic "Now Playing" 12-inch LP Sleeve (swaps cover art cleanly when switching tracks!)
+  const nowPlayingSleeveGeos = LOFI_TRACKS.map((tr) =>
+    createVinylSleeveGeometry(0.008, 0.308, tr.sleeveVariantIdx)
+  );
+  const nowPlayingSleeveMesh = new THREE.Mesh(nowPlayingSleeveGeos[0], vinylSleeveMat);
+  nowPlayingSleeveMesh.position.set(0, 0.170, 0.002);
+  nowPlayingSleeveMesh.rotation.set(-0.18, Math.PI / 2, 0);
+  nowPlayingSleeveMesh.castShadow = true;
+  nowPlayingSleeveMesh.receiveShadow = true;
+  nowPlayingSleeveMesh.userData.dynamic = true;
+  easelGroup.add(nowPlayingSleeveMesh);
+  vinylCabinet.add(easelGroup);
+
+  // =========================================================================
+  // COMPACT RETRO-MODERN STEREO MINI AMPLIFIER + MATCHING MINI MONITOR SPEAKER
+  // =========================================================================
+  const ampGroup = new THREE.Group();
+  ampGroup.name = 'LivingVinylMiniAmp';
+  ampGroup.position.set(0.415, cabTopY, 0.025);
+  ampGroup.userData.dynamic = true;
+
+  const ampChassis = new THREE.Mesh(
+    createBeveledBox(0.20, 0.086, 0.23, 0.005, 2),
+    ampChassisMat
+  );
+  ampChassis.position.y = 0.050;
+  ampChassis.castShadow = true;
+  ampChassis.receiveShadow = true;
+  outlines.addOutline(ampChassis, 1.018);
+  ampGroup.add(ampChassis);
+
+  // Warm oak wooden side cheeks flanking the brushed-metal amp chassis
+  for (const sx of [-0.104, 0.104]) {
+    const ampCheek = new THREE.Mesh(
+      createBeveledBox(0.012, 0.084, 0.226, 0.003, 1),
+      turntableWalnutMat
+    );
+    ampCheek.position.set(sx, 0.050, 0);
+    ampCheek.castShadow = true;
+    ampGroup.add(ampCheek);
+  }
+
+  // Twin warm-amber illuminated VU meters on the amp front panel
+  const vuGlowMats: THREE.MeshBasicMaterial[] = [];
+  for (const vx of [-0.044, 0.044]) {
+    const vuMat = new THREE.MeshBasicMaterial({ color: 0x5c4734 });
+    vuGlowMats.push(vuMat);
+    const vuWindow = new THREE.Mesh(new THREE.BoxGeometry(0.068, 0.032, 0.004), vuMat);
+    vuWindow.position.set(vx, 0.064, 0.115);
+    ampGroup.add(vuWindow);
+
+    const vuNeedle = new THREE.Mesh(new THREE.BoxGeometry(0.0022, 0.024, 0.002), ampChassisMat);
+    vuNeedle.position.set(vx - 0.008, 0.060, 0.1175);
+    vuNeedle.rotation.z = 0.28;
+    ampGroup.add(vuNeedle);
+  }
+
+  // Knurled brushed-brass Volume & Tone rotary knobs + mini toggle switch
+  for (const [kx, kr] of [
+    [-0.062, 0.014],
+    [0.062, 0.011],
+  ] as const) {
+    const ampKnob = new THREE.Mesh(
+      new THREE.CylinderGeometry(kr, kr, 0.014, 16),
+      handleBrassMat
+    );
+    ampKnob.rotation.x = Math.PI / 2;
+    ampKnob.position.set(kx, 0.027, 0.121);
+    ampGroup.add(ampKnob);
+  }
+  const ampToggle = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.0028, 0.0028, 0.014, 8),
+    brushedAlumMat
+  );
+  ampToggle.rotation.x = Math.PI / 2 - 0.35;
+  ampToggle.position.set(0, 0.027, 0.121);
+  ampGroup.add(ampToggle);
+
+  vinylCabinet.add(ampGroup);
+
+  // Matching Compact Oak Bookshelf Monitor Speaker beside the Mini Amp
+  const miniSpeaker = new THREE.Group();
+  miniSpeaker.position.set(0.595, cabTopY, -0.02);
+  miniSpeaker.rotation.y = -0.14;
+  const spBody = new THREE.Mesh(
+    createBeveledBox(0.138, 0.215, 0.165, 0.007, 2),
+    oakMat
+  );
+  spBody.position.y = 0.1075;
+  spBody.castShadow = true;
+  spBody.receiveShadow = true;
+  outlines.addOutline(spBody, 1.016);
+  miniSpeaker.add(spBody);
+
+  const spGrille = new THREE.Mesh(
+    createBeveledBox(0.120, 0.192, 0.014, 0.004, 1),
+    speakerGrilleMat
+  );
+  spGrille.position.set(0, 0.108, 0.080);
+  miniSpeaker.add(spGrille);
+
+  const spBadge = new THREE.Mesh(
+    new THREE.BoxGeometry(0.022, 0.007, 0.004),
+    handleBrassMat
+  );
+  spBadge.position.set(0, 0.026, 0.087);
+  miniSpeaker.add(spBadge);
+  vinylCabinet.add(miniSpeaker);
+
+  group.add(vinylCabinet);
+  addBoxCollider('col_liv_vinyl_cabinet', -0.42, 0.54, -9.72, 1.18, 1.08, 0.92);
+
+  // Register Turntable Animation & Visual State Rig on ctx
+  const applyTrackState = (trackIndex: number, isPlaying: boolean) => {
+    const safeIdx = ((trackIndex % LOFI_TRACKS.length) + LOFI_TRACKS.length) % LOFI_TRACKS.length;
+    const track = LOFI_TRACKS[safeIdx];
+    if (ctx.turntableRig) {
+      ctx.turntableRig.currentTrackIndex = safeIdx;
+      ctx.turntableRig.isPlaying = isPlaying;
+    }
+    recordLabelMat.color.setHex(track.labelHex);
+    recordLabelAccentMat.color.setHex(track.accentHex);
+    turntableLedMat.color.setHex(isPlaying ? 0x6dffb4 : 0xffb866);
+    nowPlayingSleeveMesh.geometry = nowPlayingSleeveGeos[safeIdx];
+    for (let i = 0; i < vuGlowMats.length; i++) {
+      vuGlowMats[i].color.setHex(isPlaying ? 0xffd288 : 0x5c4734);
+    }
+  };
+
+  ctx.turntableRig = {
+    worldPos: new THREE.Vector3(-0.38, 0.92, -9.72),
+    platterGroup,
+    tonearmPivot,
+    labelMat: recordLabelMat,
+    labelAccentMat: recordLabelAccentMat,
+    ledMat: turntableLedMat,
+    vuGlowMats,
+    nowPlayingSleeveMesh,
+    isPlaying: false,
+    currentTrackIndex: 0,
+    spinSpeed: 0,
+    armAngle: 0,
+    applyTrackState,
+  };
+
+  // Interactive Target 1: Turntable & Vinyl Disc -> Play, cycle through all 4 Lo-Fi tracks, and Pause
+  registerInteractable(
+    'liv_turntable',
+    '现代黑胶唱片机',
+    '播放 / 切换曲目 / 暂停',
+    'living',
+    turntableGroup,
+    () => {
+      if (!turntableControls) {
+        return {
+          title: '现代黑胶唱片机',
+          message: '黑胶唱盘正静静等待落针。',
+        };
+      }
+      const res = turntableControls.onCycleTurntable();
+      applyTrackState(res.trackIndex, res.playing);
+      if (!res.playing) {
+        return {
+          title: '黑胶唱片机 · 已暂停',
+          message: '轻抬唱臂离开黑胶纹路，彩色圆标缓缓停转，客厅回归宁静。（再次点击可重新播放）',
+        };
+      }
+      return {
+        title: `黑胶唱片 · ${res.track.side}《${res.track.title}》`,
+        message: `${res.track.englishTitle} · ${res.track.moodNote}（再次点击唱片可切换下一首或暂停，点击右侧功放可随时暂停/继续）`,
+      };
+    }
+  );
+
+  // Interactive Target 2: Mini Amp -> Direct Pause / Resume without skipping track
+  registerInteractable(
+    'liv_vinyl_amp',
+    '桌面迷你功放',
+    '暂停 / 继续播放唱片',
+    'living',
+    ampGroup,
+    () => {
+      if (!turntableControls) {
+        return {
+          title: '桌面迷你功放',
+          message: '暖黄色的 VU 表微微发亮。',
+        };
+      }
+      const res = turntableControls.onTogglePlay();
+      applyTrackState(res.trackIndex, res.playing);
+      return res.playing
+        ? {
+            title: `继续播放 · ${res.track.side}《${res.track.title}》`,
+            message: `唱针轻落，空灵清透的电钢琴泛音独奏伴随极轻黑胶底噪在客厅散开（${res.track.bpm} BPM）。`,
+          }
+        : {
+            title: '黑胶唱片机 · 已暂停',
+            message: '抬起了金属唱臂，暖色 VU 表暗了下来，客厅回归安静。',
+          };
+    }
+  );
+
+  // Interactive Target 3: Now Playing Record Easel -> Skip directly to next Electric Piano Solo track
+  registerInteractable(
+    'liv_vinyl_easel',
+    '正在播放唱片架',
+    '切换下一首电钢琴独奏唱片',
+    'living',
+    easelGroup,
+    () => {
+      if (!turntableControls) {
+        return {
+          title: '正在播放唱片架',
+          message: '展示架上斜倚着一张色彩柔和的 12 寸电钢琴独奏黑胶封套。',
+        };
+      }
+      const res = turntableControls.onNextTrack();
+      applyTrackState(res.trackIndex, res.playing);
+      return {
+        title: `切换唱片 · ${res.track.side}《${res.track.title}》`,
+        message: `${res.track.englishTitle} · ${res.track.moodNote}`,
+      };
+    }
+  );
 
   // =========================================================================
   // 11. STYLIZED ANIME SILHOUETTE FIGURE (Dynamic - Revealed in Meta Mode)
@@ -4272,6 +5749,7 @@ export function buildLivingRoom(ctx: RoomBuildContext, playDoorAudio: (open: boo
       }
     }
 
+    mergeDynamicSubtreeMeshes(ceilingPanel, outlines, 'LivingFlatCeilingLampMerged');
     ceilingGroup.add(ceilingPanel);
 
     // Primary Flat Ceiling Panel Wide-Radius Warm-White PointLight (starts at 0 = OFF)
@@ -4312,6 +5790,7 @@ export function buildLivingRoom(ctx: RoomBuildContext, playDoorAudio: (open: boo
     lensDisc.position.y = -0.024;
     downlight.add(lensDisc);
 
+    mergeDynamicSubtreeMeshes(downlight, outlines, `LivingDownlightMerged_${dz}`);
     ceilingGroup.add(downlight);
 
     const downLightSrc = new THREE.PointLight(0xfff2dc, 0.0, 18.0, 0.70);

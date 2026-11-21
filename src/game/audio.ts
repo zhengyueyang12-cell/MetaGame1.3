@@ -1,4 +1,5 @@
 import type { AtmosphereMode, RoomId } from './types';
+import { LOFI_TRACKS, VinylLofiPlayer, type LofiTrackSpec } from './vinylPlayer';
 
 export class ProceduralAudioEngine {
   private ctx: AudioContext | null = null;
@@ -7,6 +8,7 @@ export class ProceduralAudioEngine {
   private droneSub: OscillatorNode | null = null;
   private droneFilter: BiquadFilterNode | null = null;
   private droneGain: GainNode | null = null;
+  private vinylPlayer: VinylLofiPlayer | null = null;
   private enabled = true;
   private started = false;
   private stepTimer = 0;
@@ -704,8 +706,54 @@ export class ProceduralAudioEngine {
     src.start(now);
   }
 
+  private ensureVinylPlayer(): VinylLofiPlayer | null {
+    this.unlock();
+    if (!this.ctx || !this.masterGain) return null;
+    if (!this.vinylPlayer) {
+      this.vinylPlayer = new VinylLofiPlayer(this.ctx, this.masterGain);
+    }
+    return this.vinylPlayer;
+  }
+
+  public cycleVinylTurntable(): { playing: boolean; trackIndex: number; track: LofiTrackSpec } {
+    const vp = this.ensureVinylPlayer();
+    if (!vp) {
+      return { playing: false, trackIndex: 0, track: LOFI_TRACKS[0] };
+    }
+    return vp.cycleTurntable();
+  }
+
+  public nextVinylTrack(): { playing: boolean; trackIndex: number; track: LofiTrackSpec } {
+    const vp = this.ensureVinylPlayer();
+    if (!vp) {
+      return { playing: false, trackIndex: 0, track: LOFI_TRACKS[0] };
+    }
+    return vp.nextTrack();
+  }
+
+  public toggleVinylPlayback(): { playing: boolean; trackIndex: number; track: LofiTrackSpec } {
+    const vp = this.ensureVinylPlayer();
+    if (!vp) {
+      return { playing: false, trackIndex: 0, track: LOFI_TRACKS[0] };
+    }
+    return vp.toggle();
+  }
+
+  public getVinylState(): { playing: boolean; trackIndex: number; track: LofiTrackSpec } {
+    if (!this.vinylPlayer) {
+      return { playing: false, trackIndex: 0, track: LOFI_TRACKS[0] };
+    }
+    return this.vinylPlayer.getState();
+  }
+
+  public updateVinylSpatial(distanceMeters: number, room: RoomId): void {
+    this.vinylPlayer?.updateSpatial(distanceMeters, room);
+  }
+
   dispose(): void {
     try {
+      this.vinylPlayer?.dispose();
+      this.vinylPlayer = null;
       this.droneOsc?.stop();
       this.droneSub?.stop();
       void this.ctx?.close();

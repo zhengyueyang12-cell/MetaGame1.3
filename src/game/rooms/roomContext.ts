@@ -148,6 +148,22 @@ export interface CabinetDoorOptions {
   messageClose?: string;
 }
 
+export interface TurntableRig {
+  worldPos: THREE.Vector3;
+  platterGroup: THREE.Group;
+  tonearmPivot: THREE.Group;
+  labelMat: THREE.MeshStandardMaterial;
+  labelAccentMat: THREE.MeshStandardMaterial;
+  ledMat: THREE.MeshBasicMaterial;
+  vuGlowMats: THREE.MeshBasicMaterial[];
+  nowPlayingSleeveMesh: THREE.Mesh;
+  isPlaying: boolean;
+  currentTrackIndex: number;
+  spinSpeed: number;
+  armAngle: number;
+  applyTrackState: (trackIndex: number, isPlaying: boolean) => void;
+}
+
 export interface RoomBuildContext {
   scene: THREE.Scene;
   sceneManager: SceneManager;
@@ -166,6 +182,7 @@ export interface RoomBuildContext {
   ambientProps: AmbientPropRig[];
   clockRigs: { hourHand: THREE.Object3D; minuteHand: THREE.Object3D; secondHand?: THREE.Object3D }[];
   flickerLights: { light: THREE.PointLight; baseIntensity: number }[];
+  turntableRig: TurntableRig | null;
   metaState: {
     tvMetaOn: boolean;
     tvScreenMat: THREE.MeshStandardMaterial | null;
@@ -500,26 +517,26 @@ export function createRoomBuildContext(
       woodLacquer: 0.50,
     });
     const grooveRecessMat = mat({
-      color: new THREE.Color(0xe0b272),
-      roughness: 0.68,
+      color: new THREE.Color(0x9a6b39),
+      roughness: 0.78,
       metalness: 0.0,
-      woodLacquer: 0.32,
+      woodLacquer: 0.16,
     });
     const moldingBeadMat = mat({
-      map: textures.furnitureOak,
-      bumpMap: textures.furnitureWoodBump,
-      bumpScale: 0.005,
-      color: baseDoorColor.clone().multiply(new THREE.Color(0.98, 0.94, 0.88)),
-      roughness: 0.59,
+      map: textures.woodDoor,
+      bumpMap: textures.woodDoorBump,
+      bumpScale: 0.0025,
+      color: baseDoorColor.clone().multiply(new THREE.Color(0.92, 0.87, 0.80)),
+      roughness: 0.54,
       metalness: 0.0,
-      woodLacquer: 0.50,
+      woodLacquer: 0.52,
     });
     const innerPanelMat = mat({
       map: textures.woodDoor,
       bumpMap: textures.woodDoorBump,
-      bumpScale: 0.006,
-      color: baseDoorColor.clone().lerp(new THREE.Color(0xfffcf2), 0.40),
-      roughness: 0.58,
+      bumpScale: 0.0025,
+      color: baseDoorColor.clone().lerp(new THREE.Color(0xfffbf2), 0.24),
+      roughness: 0.56,
       metalness: 0.0,
       woodLacquer: 0.52,
     });
@@ -552,59 +569,158 @@ export function createRoomBuildContext(
     frameGroup.add(header);
     structureGroup.add(frameGroup);
 
-    // 2. Pivoting Solid-Oak Door Leaf + 3D Beveled Stile-and-Rail Moldings & Raised Coffer Panels
+    // 2. Pivoting Solid-Oak Door Leaf with True 3D Recessed Coffer Panels (立体凹陷池板线)
     const pivot = new THREE.Group();
     pivot.userData.dynamic = true;
     pivot.position.set(hingeX, hingeY, hingeZ);
     structureGroup.add(pivot);
 
-    const doorThick = 0.052;
-    const panelGeo = isAlongZ
-      ? createBeveledBox(doorThick, doorHeight, doorWidth, 0.009, 2)
-      : createBeveledBox(doorWidth, doorHeight, doorThick, 0.009, 2);
-    const panel = new THREE.Mesh(panelGeo, texturedDoorLeafMat);
-    panel.castShadow = true;
-    panel.receiveShadow = true;
+    const doorThick = 0.054;
+    const recessCoreThick = 0.024; // 15mm true physical recess depth on BOTH door faces!
+
+    // Local door-leaf space: X = door width, Y = height (0..doorHeight), Z = thickness
+    const leafGroup = new THREE.Group();
     if (isAlongZ) {
-      panel.position.set(0, doorHeight / 2, dirSign * (doorWidth / 2));
+      leafGroup.position.set(0, 0, dirSign * (doorWidth / 2));
+      leafGroup.rotation.y = Math.PI / 2;
     } else {
-      panel.position.set(dirSign * (doorWidth / 2), doorHeight / 2, 0);
+      leafGroup.position.set(dirSign * (doorWidth / 2), 0, 0);
     }
-    outlines.addOutline(panel, 1.015);
-    pivot.add(panel);
+    pivot.add(leafGroup);
 
-    for (const [py, ph] of [
-      [doorHeight * 0.66, doorHeight * 0.46],
-      [doorHeight * 0.23, doorHeight * 0.25],
-    ]) {
-      const panelW = doorWidth * 0.68;
-      // Outer recessed shadow groove channel
-      const grooveChannelGeo = isAlongZ
-        ? createBeveledBox(doorThick + 0.005, ph, panelW, 0.004, 2)
-        : createBeveledBox(panelW, ph, doorThick + 0.005, 0.004, 2);
-      const grooveChannel = new THREE.Mesh(grooveChannelGeo, grooveRecessMat);
-      grooveChannel.position.copy(panel.position);
-      grooveChannel.position.y = py;
-      pivot.add(grooveChannel);
+    const stileW = Math.max(0.115, doorWidth * 0.145);
+    const innerW = doorWidth - stileW * 2;
+    const botRailH = doorHeight * 0.105;
+    const lowerTopY = doorHeight * 0.385;
+    const midTopY = doorHeight * 0.485;
+    const upperTopY = doorHeight * 0.905;
+    const topRailH = doorHeight - upperTopY;
+    const midRailH = midTopY - lowerTopY;
 
-      // Stepped ogee molding bevel collar framing the raised wooden panel
-      const moldingCollarGeo = isAlongZ
-        ? createBeveledBox(doorThick + 0.010, ph - 0.018, panelW - 0.018, 0.005, 2)
-        : createBeveledBox(panelW - 0.018, ph - 0.018, doorThick + 0.010, 0.005, 2);
-      const moldingCollar = new THREE.Mesh(moldingCollarGeo, moldingBeadMat);
-      moldingCollar.position.copy(panel.position);
-      moldingCollar.position.y = py;
-      pivot.add(moldingCollar);
+    // 2A. Continuous recessed inner core panel spanning both coffers (zero gaps/light leaks)
+    const coreMesh = new THREE.Mesh(
+      createBeveledBox(innerW + 0.024, doorHeight - 0.06, recessCoreThick, 0.002, 1),
+      innerPanelMat
+    );
+    coreMesh.position.set(0, doorHeight / 2, 0);
+    coreMesh.receiveShadow = true;
+    leafGroup.add(coreMesh);
 
-      // Raised center solid-oak fielded panel with crisp beveled fielding edges
-      const innerCofferGeo = isAlongZ
-        ? createBeveledBox(doorThick + 0.016, ph - 0.048, panelW - 0.048, 0.006, 2)
-        : createBeveledBox(panelW - 0.048, ph - 0.048, doorThick + 0.016, 0.006, 2);
-      const innerCoffer = new THREE.Mesh(innerCofferGeo, innerPanelMat);
-      innerCoffer.position.copy(panel.position);
-      innerCoffer.position.y = py;
-      innerCoffer.castShadow = true;
-      pivot.add(innerCoffer);
+    // 2B. Full-thickness outer stiles & horizontal rails forming the deep recessed openings
+    const stileGeo = createBeveledBox(stileW, doorHeight, doorThick, 0.005, 2);
+    for (const sSign of [-1, 1] as const) {
+      const stile = new THREE.Mesh(stileGeo, texturedDoorLeafMat);
+      stile.position.set(sSign * (doorWidth / 2 - stileW / 2), doorHeight / 2, 0);
+      stile.castShadow = true;
+      stile.receiveShadow = true;
+      outlines.addOutline(stile, 1.012);
+      leafGroup.add(stile);
+    }
+
+    const rails: [number, number][] = [
+      [botRailH / 2, botRailH],
+      [(lowerTopY + midTopY) / 2, midRailH],
+      [(upperTopY + doorHeight) / 2, topRailH],
+    ];
+    for (const [ry, rh] of rails) {
+      const rail = new THREE.Mesh(
+        createBeveledBox(innerW + 0.006, rh, doorThick, 0.005, 2),
+        texturedDoorLeafMat
+      );
+      rail.position.set(0, ry, 0);
+      rail.castShadow = true;
+      rail.receiveShadow = true;
+      leafGroup.add(rail);
+    }
+
+    // 2C. Sculpted 3D Stepped Chamfered Perimeter Molding + Shadow Groove + Fielded Center Panel
+    //     Creates crisp, deep architectural 凹陷池板线 on both front and back faces!
+    const coffers: [number, number][] = [
+      [(midTopY + upperTopY) / 2, upperTopY - midTopY],   // Tall upper recessed panel
+      [(botRailH + lowerTopY) / 2, lowerTopY - botRailH], // Balanced lower recessed panel
+    ];
+    const beadW = 0.020;
+    const beadDepth = 0.011; // Steps cleanly inward from outer rail (0.027) toward core (0.012)
+    const grooveW = 0.0065;
+    const grooveDepth = 0.0032;
+
+    for (const [cy, ch] of coffers) {
+      const cw = innerW;
+      for (const faceSign of [-1, 1] as const) {
+        const beadZ = faceSign * (recessCoreThick / 2 + beadDepth / 2 + 0.001);
+        const grooveZ = faceSign * (recessCoreThick / 2 + grooveDepth / 2);
+
+        // 4-sided 3D beveled perimeter bead molding framing the recessed pocket
+        const topBead = new THREE.Mesh(
+          createBeveledBox(cw - 0.002, beadW, beadDepth, 0.0035, 2),
+          moldingBeadMat
+        );
+        topBead.position.set(0, cy + ch / 2 - beadW / 2, beadZ);
+        topBead.castShadow = true;
+        topBead.receiveShadow = true;
+        leafGroup.add(topBead);
+
+        const botBead = new THREE.Mesh(
+          createBeveledBox(cw - 0.002, beadW, beadDepth, 0.0035, 2),
+          moldingBeadMat
+        );
+        botBead.position.set(0, cy - ch / 2 + beadW / 2, beadZ);
+        botBead.castShadow = true;
+        botBead.receiveShadow = true;
+        leafGroup.add(botBead);
+
+        const sideBeadH = ch - beadW * 2 + 0.002;
+        for (const sx of [-1, 1] as const) {
+          const sideBead = new THREE.Mesh(
+            createBeveledBox(beadW, sideBeadH, beadDepth, 0.0035, 2),
+            moldingBeadMat
+          );
+          sideBead.position.set(sx * (cw / 2 - beadW / 2), cy, beadZ);
+          sideBead.castShadow = true;
+          sideBead.receiveShadow = true;
+          leafGroup.add(sideBead);
+        }
+
+        // Crisp recessed perimeter shadow groove (凹陷池板阴角线) right inside the stepped bead
+        const gInnerW = cw - beadW * 2;
+        const gInnerH = ch - beadW * 2;
+        const topGroove = new THREE.Mesh(
+          new THREE.BoxGeometry(gInnerW, grooveW, grooveDepth),
+          grooveRecessMat
+        );
+        topGroove.position.set(0, cy + gInnerH / 2 - grooveW / 2, grooveZ);
+        leafGroup.add(topGroove);
+
+        const botGroove = new THREE.Mesh(
+          new THREE.BoxGeometry(gInnerW, grooveW, grooveDepth),
+          grooveRecessMat
+        );
+        botGroove.position.set(0, cy - gInnerH / 2 + grooveW / 2, grooveZ);
+        leafGroup.add(botGroove);
+
+        for (const sx of [-1, 1] as const) {
+          const sideGroove = new THREE.Mesh(
+            new THREE.BoxGeometry(grooveW, gInnerH - grooveW * 2, grooveDepth),
+            grooveRecessMat
+          );
+          sideGroove.position.set(sx * (gInnerW / 2 - grooveW / 2), cy, grooveZ);
+          leafGroup.add(sideGroove);
+        }
+
+        // Gently beveled recessed fielded center panel (still recessed 7mm below outer stiles!)
+        const fieldW = gInnerW - grooveW * 2 - 0.004;
+        const fieldH = gInnerH - grooveW * 2 - 0.004;
+        if (fieldW > 0.08 && fieldH > 0.08) {
+          const fieldedBoss = new THREE.Mesh(
+            createBeveledBox(fieldW, fieldH, 0.0085, 0.004, 2),
+            innerPanelMat
+          );
+          fieldedBoss.position.set(0, cy, faceSign * (recessCoreThick / 2 + 0.0035));
+          fieldedBoss.castShadow = true;
+          fieldedBoss.receiveShadow = true;
+          leafGroup.add(fieldedBoss);
+        }
+      }
     }
 
     // Slim realistic lever assembly on both sides
@@ -938,6 +1054,7 @@ export function createRoomBuildContext(
     ambientProps,
     clockRigs,
     flickerLights,
+    turntableRig: null,
     metaState: {
       tvMetaOn: false,
       tvScreenMat: null,

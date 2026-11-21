@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import * as BufferGeometryUtils from 'three/addons/utils/BufferGeometryUtils.js';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
 import type { OutlineRegistry } from './pipeline';
 
@@ -219,15 +220,27 @@ export function createDrapedTableclothGeometry(
   const rimThick = 0.036; // clears the 3.4cm thick tabletop slab completely before hanging vertically
 
   // Inner [-edgeParam, +edgeParam] maps to the flat tabletop; [edgeParam, 1.0] maps to the vertical hanging skirt
-  const edgeParam = 0.68;
+  const edgeParam = 0.66;
+  // Uniform physical overhang on ALL four sides so ±Z long sides drop to the exact same hem height as ±X ends
+  const overhang = Math.max(dropHeight * 1.15, 0.26);
+  const maxX = hw + overhang;
+  const maxZ = hd + overhang;
 
   for (let i = 0; i < pos.count; i++) {
     const gx = pos.getX(i); // in [-1, 1]
     const gz = pos.getZ(i); // in [-1, 1]
 
-    // Map grid coordinates so [-edgeParam, edgeParam] spans [-hw, hw] x [-hd, hd]
-    const rawX = (gx / edgeParam) * hw;
-    const rawZ = (gz / edgeParam) * hd;
+    // Map [-edgeParam, edgeParam] -> [-hw, hw] x [-hd, hd], and outer strip uniformly by `overhang`
+    const absGx = Math.abs(gx);
+    const absGz = Math.abs(gz);
+    const rawX =
+      absGx <= edgeParam
+        ? (gx / edgeParam) * hw
+        : Math.sign(gx) * (hw + ((absGx - edgeParam) / (1.0 - edgeParam)) * overhang);
+    const rawZ =
+      absGz <= edgeParam
+        ? (gz / edgeParam) * hd
+        : Math.sign(gz) * (hd + ((absGz - edgeParam) / (1.0 - edgeParam)) * overhang);
 
     // Signed distance outside the rounded tabletop rectangle
     const qx = Math.abs(rawX) - innerW;
@@ -250,12 +263,11 @@ export function createDrapedTableclothGeometry(
       const bx = Math.sign(rawX) * Math.min(Math.abs(rawX), innerW) + nx * cornerR;
       const bz = Math.sign(rawZ) * Math.min(Math.abs(rawZ), innerD) + nz * cornerR;
 
-      // Normalized vertical hang progress s in [0, 1]
-      const maxOverhang = Math.max(
-        0.05,
-        ((1.0 - edgeParam) / edgeParam) * Math.max(hw, hd)
-      );
-      const s = Math.min(1.0, distOutside / maxOverhang);
+      // Exact ray distance from perimeter (bx, bz) to outer grid boundary so s hits 1.0 uniformly on all 4 sides & corners
+      const tx = Math.abs(nx) > 1e-5 ? (maxX - Math.abs(bx)) / Math.abs(nx) : 1e9;
+      const tz = Math.abs(nz) > 1e-5 ? (maxZ - Math.abs(bz)) / Math.abs(nz) : 1e9;
+      const localMaxOverhang = Math.max(0.05, Math.min(tx, tz));
+      const s = Math.min(1.0, distOutside / localMaxOverhang);
 
       // Phase 1 (s in 0..0.16): smoothly wrap over the 3.4cm bullnose rim of the tabletop
       // Phase 2 (s in 0.16..1.0): hang nearly straight down under gravity!
@@ -625,8 +637,8 @@ export function createDrapedCurtainGeometry(
   for (let i = 0; i < pos.count; i++) {
     const x = pos.getX(i);
     const y = pos.getY(i);
-    const u = (x + width / 2) / width; // 0..1 across curtain width
-    const v = (y + height / 2) / height; // 0 (bottom hem) .. 1 (top header)
+    const u = THREE.MathUtils.clamp((x + width / 2) / width, 0, 1); // 0..1 across curtain width
+    const v = THREE.MathUtils.clamp((y + height / 2) / height, 0, 1); // 0 (bottom hem) .. 1 (top header)
 
     // Tieback waist gather centered around v = 0.365 (matches tieBand at y = -0.34)
     const tieDist = (v - 0.365) / 0.22;
@@ -1162,6 +1174,277 @@ export function createMoldedDrawerFront(
 }
 
 /**
+ * Turned classic copper-brass round cabinet knob (铜黄圆形把手) via LatheGeometry.
+ * Oriented along +Y (base rosette at y=0, spherical knob crown at y≈0.027).
+ */
+export function createCopperKnobGeometry(scale = 1.0): THREE.LatheGeometry {
+  const s = scale;
+  const pts = [
+    new THREE.Vector2(0.0005 * s, 0.0),
+    new THREE.Vector2(0.0145 * s, 0.0),
+    new THREE.Vector2(0.0142 * s, 0.0026 * s),
+    new THREE.Vector2(0.0110 * s, 0.0046 * s),
+    new THREE.Vector2(0.0062 * s, 0.0064 * s),
+    new THREE.Vector2(0.0052 * s, 0.0115 * s),
+    new THREE.Vector2(0.0074 * s, 0.0148 * s),
+    new THREE.Vector2(0.0128 * s, 0.0176 * s),
+    new THREE.Vector2(0.0148 * s, 0.0212 * s),
+    new THREE.Vector2(0.0136 * s, 0.0252 * s),
+    new THREE.Vector2(0.0094 * s, 0.0278 * s),
+    new THREE.Vector2(0.0042 * s, 0.0290 * s),
+    new THREE.Vector2(0.0004 * s, 0.0293 * s),
+  ];
+  const geo = new THREE.LatheGeometry(pts, 20);
+  geo.computeVertexNormals();
+  return geo;
+}
+
+/**
+ * Sculpted gently bowed arch cabinet pull handle (弧形橱柜拉手) oriented along local X
+ * with arch projecting outward along +Z (z=0 at door surface).
+ */
+export function createArchedCabinetPullGeometry(
+  span = 0.118,
+  projection = 0.024,
+  tubeRadius = 0.0052
+): THREE.BufferGeometry {
+  const hs = span * 0.5;
+  const curve = new THREE.CatmullRomCurve3([
+    new THREE.Vector3(-hs, 0, 0.001),
+    new THREE.Vector3(-hs * 0.92, 0, projection * 0.72),
+    new THREE.Vector3(-hs * 0.45, 0, projection),
+    new THREE.Vector3(0, 0, projection * 1.04),
+    new THREE.Vector3(hs * 0.45, 0, projection),
+    new THREE.Vector3(hs * 0.92, 0, projection * 0.72),
+    new THREE.Vector3(hs, 0, 0.001),
+  ]);
+  return new THREE.TubeGeometry(curve, 22, tubeRadius, 10, false);
+}
+
+/**
+ * Pillowed retro rounded-edge appliance slab (for Smeg/1950s vintage rounded refrigerator
+ * carcass & gently cambered convex doors). Bulges smoothly outward on the front face
+ * (camberAxis) while keeping generous pillowy corners.
+ */
+export function createRetroPillowedSlabGeometry(
+  width: number,
+  height: number,
+  depth: number,
+  cornerRadius = 0.075,
+  frontBulge = 0.022,
+  frontSign: -1 | 1 = -1,
+  topDome = 0.008
+): THREE.BufferGeometry {
+  const maxR = Math.min(width, height, depth) * 0.46;
+  const geo = new RoundedBoxGeometry(
+    width,
+    height,
+    depth,
+    8,
+    Math.min(cornerRadius, maxR)
+  );
+  const pos = geo.attributes.position;
+  const hw = width * 0.5;
+  const hh = height * 0.5;
+  const hd = depth * 0.5;
+
+  for (let i = 0; i < pos.count; i++) {
+    let x = pos.getX(i);
+    let y = pos.getY(i);
+    const z = pos.getZ(i);
+
+    const nx = hw > 1e-4 ? THREE.MathUtils.clamp(x / hw, -1, 1) : 0;
+    const ny = hh > 1e-4 ? THREE.MathUtils.clamp(y / hh, -1, 1) : 0;
+    const nz = hd > 1e-4 ? THREE.MathUtils.clamp(z / hd, -1, 1) : 0;
+
+    // Smooth convex outward camber on the front door face (local X = frontSign * hw)
+    const frontFactor = THREE.MathUtils.clamp((nx * frontSign - 0.15) / 0.85, 0, 1);
+    const camberProfile = Math.cos(ny * Math.PI * 0.46) * Math.cos(nz * Math.PI * 0.46);
+    x += frontSign * frontBulge * frontFactor * camberProfile;
+
+    // Subtle domed top crown (classic rounded vintage refrigerator roof)
+    if (topDome > 0 && ny > 0.25) {
+      const topW = (ny - 0.25) / 0.75;
+      y += topDome * topW * Math.cos(nx * Math.PI * 0.46) * Math.cos(nz * Math.PI * 0.46);
+    }
+
+    pos.setXYZ(i, x, y, z);
+  }
+
+  pos.needsUpdate = true;
+  geo.computeVertexNormals();
+  return geo;
+}
+
+export interface CraftedCabinetFrontOptions {
+  width: number;
+  height: number;
+  depth: number;
+  facingAxis: 'x' | 'z';
+  facingSign: 1 | -1;
+  frameMat: THREE.Material;
+  panelMat: THREE.Material;
+  grooveMat: THREE.Material;
+  handleMat?: THREE.Material;
+  handleKind?: 'knob' | 'arch_h' | 'arch_v' | 'none';
+  handleAlign?: -1 | 0 | 1;
+  handleYOffset?: number;
+  stileWidth?: number;
+}
+
+/**
+ * High-detail architectural recessed Shaker wood cabinet door / drawer front:
+ * - True 3D perimeter stiles & rails projecting cleanly forward around a recessed inner panel
+ * - Routed bevel shadow step around the inner panel perimeter for rich tactile wood joinery
+ * - Choice of turned copper-brass round knob or bowed arch pull handle
+ */
+export function createCraftedCabinetFront(opts: CraftedCabinetFrontOptions): THREE.Group {
+  const {
+    width,
+    height,
+    depth,
+    facingAxis,
+    facingSign,
+    frameMat,
+    panelMat,
+    grooveMat,
+    handleMat,
+    handleKind = 'knob',
+    handleAlign = 0,
+    handleYOffset = 0,
+    stileWidth,
+  } = opts;
+
+  const g = new THREE.Group();
+  const sw = stileWidth ?? Math.min(0.050, Math.min(width, height) * 0.22);
+  const railH = Math.min(sw, height * 0.24);
+  const innerW = Math.max(0.03, width - sw * 2);
+  const innerH = Math.max(0.025, height - railH * 2);
+
+  // 1. Solid backing core + recessed center wood panel (sits 6.5mm behind front rail plane)
+  const panelThick = Math.max(0.010, depth - 0.0075);
+  const panelShift = -facingSign * (depth * 0.5 - panelThick * 0.5);
+  const centerGeo =
+    facingAxis === 'z'
+      ? createBeveledBox(width - 0.006, height - 0.006, panelThick, 0.0025, 1)
+      : createBeveledBox(panelThick, height - 0.006, width - 0.006, 0.0025, 1);
+  const centerPanel = new THREE.Mesh(centerGeo, panelMat);
+  if (facingAxis === 'x') centerPanel.position.x = panelShift;
+  else centerPanel.position.z = panelShift;
+  centerPanel.castShadow = true;
+  centerPanel.receiveShadow = true;
+  g.add(centerPanel);
+
+  // 2. Stepped inner routed bevel collar framing the recessed panel (creates crisp wood joinery shadow!)
+  const beadThick = 0.0055;
+  const beadWidth = 0.0085;
+  const beadX = facingSign * (depth * 0.5 - 0.0055);
+  const addBead = (bw: number, bh: number, offsetU: number, offsetY: number) => {
+    const geo =
+      facingAxis === 'z'
+        ? createBeveledBox(bw, bh, beadThick, 0.0018, 1)
+        : createBeveledBox(beadThick, bh, bw, 0.0018, 1);
+    const m = new THREE.Mesh(geo, grooveMat);
+    if (facingAxis === 'x') m.position.set(beadX, offsetY, offsetU);
+    else m.position.set(offsetU, offsetY, beadX);
+    g.add(m);
+  };
+  for (const sy of [-1, 1]) {
+    addBead(innerW + beadWidth * 0.5, beadWidth, 0, sy * (innerH * 0.5 - beadWidth * 0.35));
+  }
+  for (const su of [-1, 1]) {
+    addBead(beadWidth, Math.max(0.015, innerH - beadWidth * 0.8), su * (innerW * 0.5 - beadWidth * 0.35), 0);
+  }
+
+  // 3. Full-depth perimeter vertical stiles & horizontal rails (strictly flush with exact width × height)
+  const addFrameBar = (bw: number, bh: number, offsetU: number, offsetY: number) => {
+    const geo =
+      facingAxis === 'z'
+        ? createBeveledBox(bw, bh, depth, 0.0038, 2)
+        : createBeveledBox(depth, bh, bw, 0.0038, 2);
+    const m = new THREE.Mesh(geo, frameMat);
+    if (facingAxis === 'x') m.position.set(0, offsetY, offsetU);
+    else m.position.set(offsetU, offsetY, 0);
+    m.castShadow = true;
+    m.receiveShadow = true;
+    g.add(m);
+  };
+
+  // Left & Right full-height vertical stiles (exact outer edges at ±width/2)
+  for (const su of [-1, 1]) {
+    addFrameBar(sw, height, su * (width * 0.5 - sw * 0.5), 0);
+  }
+  // Top & Bottom horizontal rails fitted tightly between the stiles (exact outer edges at ±height/2)
+  for (const sy of [-1, 1]) {
+    addFrameBar(innerW + 0.002, railH, 0, sy * (height * 0.5 - railH * 0.5));
+  }
+
+  // 4. Sculpted Hardware (Turned Copper-Brass Round Knob OR Bowed Arch Pull)
+  if (handleMat && handleKind !== 'none') {
+    const facePos = facingSign * (depth * 0.5);
+    const lateralU =
+      handleAlign === 0 ? 0 : handleAlign * (width * 0.5 - Math.max(sw * 0.52, 0.028));
+
+    if (handleKind === 'knob') {
+      const knobGeo = createCopperKnobGeometry(1.0);
+      const knob = new THREE.Mesh(knobGeo, handleMat);
+      if (facingAxis === 'x') {
+        knob.rotation.z = facingSign > 0 ? -Math.PI / 2 : Math.PI / 2;
+        knob.position.set(facePos, handleYOffset, lateralU);
+      } else {
+        knob.rotation.x = facingSign > 0 ? Math.PI / 2 : -Math.PI / 2;
+        knob.position.set(lateralU, handleYOffset, facePos);
+      }
+      knob.castShadow = true;
+      g.add(knob);
+    } else {
+      const span =
+        handleKind === 'arch_h'
+          ? Math.min(0.122, width * 0.32)
+          : Math.min(0.115, height * 0.28);
+      const archGeo = createArchedCabinetPullGeometry(span, 0.023, 0.005);
+      const arch = new THREE.Mesh(archGeo, handleMat);
+      if (handleKind === 'arch_v') {
+        arch.rotation.z = Math.PI / 2;
+      }
+      if (facingAxis === 'x') {
+        arch.rotation.y = facingSign > 0 ? Math.PI / 2 : -Math.PI / 2;
+        arch.position.set(facePos, handleYOffset, lateralU);
+      } else {
+        if (facingSign < 0) arch.rotation.y = Math.PI;
+        arch.position.set(lateralU, handleYOffset, facePos);
+      }
+      arch.castShadow = true;
+      g.add(arch);
+
+      // Small circular mounting escutcheon bases at each end of the arch pull
+      const footGeo = new THREE.CylinderGeometry(0.0085, 0.0095, 0.005, 12);
+      for (const sgn of [-1, 1]) {
+        const foot = new THREE.Mesh(footGeo, handleMat);
+        if (facingAxis === 'x') {
+          foot.rotation.z = Math.PI / 2;
+          foot.position.set(
+            facePos + facingSign * 0.002,
+            handleKind === 'arch_v' ? handleYOffset + sgn * (span * 0.5) : handleYOffset,
+            handleKind === 'arch_h' ? lateralU + sgn * (span * 0.5) : lateralU
+          );
+        } else {
+          foot.rotation.x = Math.PI / 2;
+          foot.position.set(
+            handleKind === 'arch_h' ? lateralU + sgn * (span * 0.5) : lateralU,
+            handleKind === 'arch_v' ? handleYOffset + sgn * (span * 0.5) : handleYOffset,
+            facePos + facingSign * 0.002
+          );
+        }
+        g.add(foot);
+      }
+    }
+  }
+
+  return g;
+}
+
+/**
  * Creates a 3D sculpted broad botanical leaf blade (Monstera / Fiddle-Leaf Fig /
  * Bird-of-Paradise style) anchored at its petiole base (0,0,0) and arching
  * gracefully outward along +Z with a central midrib crease and organic wave.
@@ -1179,8 +1462,8 @@ export function createBroadLeafGeometry(
   const uv = geo.attributes.uv;
 
   for (let i = 0; i < pos.count; i++) {
-    const u = uv.getX(i) * 2.0 - 1.0; // -1 .. 1 across width
-    const v = uv.getY(i); // 0 (base) .. 1 (tip)
+    const u = THREE.MathUtils.clamp(uv.getX(i), 0, 1) * 2.0 - 1.0; // -1 .. 1 across width
+    const v = THREE.MathUtils.clamp(uv.getY(i), 0, 1); // 0 (base) .. 1 (tip)
 
     // Broad ovate / fiddle-leaf silhouette envelope
     const baseTaper = Math.sin(Math.pow(v, 0.58) * Math.PI);
@@ -1439,10 +1722,43 @@ export function createPinchedTuftedBackCushionGeometry(
 
 
 /**
- * Creates a hardcover book geometry with UV coordinates mapped to one of the 8
- * illustrated/typographic book tiles in `textures.bookCoverAtlas` (4 columns x 2 rows)
- * so the spine, front cover, and back cover display crisp printed text & geometric motifs,
- * while top/bottom/fore-edge faces map to the creamy paper page block strip.
+ * Helper to remap a non-indexed BufferGeometry's UVs linearly into a sub-rectangle
+ * [u0..u1] x [v0..v1] of a texture atlas.
+ */
+function remapPartUVs(
+  rawGeo: THREE.BufferGeometry,
+  u0: number,
+  u1: number,
+  v0: number,
+  v1: number
+): THREE.BufferGeometry {
+  const geo = rawGeo.index ? rawGeo.toNonIndexed() : rawGeo.clone();
+  const uv = geo.attributes.uv;
+  if (uv) {
+    const du = u1 - u0;
+    const dv = v1 - v0;
+    for (let i = 0; i < uv.count; i++) {
+      uv.setXY(i, u0 + uv.getX(i) * du, v0 + uv.getY(i) * dv);
+    }
+    uv.needsUpdate = true;
+  }
+  if (rawGeo !== geo) rawGeo.dispose();
+  return geo;
+}
+
+/**
+ * Builds a true 3-part sculpted hardcover/paperback book geometry (merged into a
+ * single draw call) eliminating the flat cardboard-box silhouette:
+ * 1) Naturally arched/crowned curved spine wrapping smoothly into hinge grooves
+ * 2) Front & back cover boards with authentic physical thickness overhanging top,
+ *    bottom, and fore-edge
+ * 3) Recessed ivory/cream paper page block physically inset inside the cover boards
+ *
+ * Maps UVs cleanly into the 4x4 (16-variant) light-toned `textures.bookCoverAtlas`
+ * across all three orientations:
+ * - Upright along X (width < depth): spine faces +Z, covers on ±X
+ * - Upright along Z (depth < width): spine faces +X, covers on ±Z
+ * - Flat horizontal (height < width && height < depth): spine faces +Z, covers on ±Y
  */
 export function createBookGeometry(
   width: number,
@@ -1450,91 +1766,252 @@ export function createBookGeometry(
   depth: number,
   variantIndex = 0
 ): THREE.BufferGeometry {
-  const geo = new THREE.BoxGeometry(width, height, depth, 2, 4, 2);
-  const pos = geo.attributes.position;
-  const norm = geo.attributes.normal;
-  const uv = geo.attributes.uv;
-
-  const col = ((variantIndex % 4) + 4) % 4;
-  const row = Math.floor(((variantIndex % 8) + 8) % 8 / 4);
+  const idx = ((variantIndex % 16) + 16) % 16;
+  const col = idx % 4;
+  const row = Math.floor(idx / 4);
   const tileU0 = col * 0.25;
-  const tileU1 = tileU0 + 0.25;
-  const tileV0 = row * 0.5;
-  const tileV1 = tileV0 + 0.5;
+  // FlipY=true on CanvasTexture: row 0 is top of canvas (v in [0.75..1.0])
+  const tileV1 = 1.0 - row * 0.25;
+  const tileV0 = tileV1 - 0.25;
 
-  const halfW = width * 0.5;
-  const halfH = height * 0.5;
+  const spineU0 = tileU0 + 0.025 * 0.25;
+  const spineU1 = tileU0 + 0.215 * 0.25;
+  const coverU0 = tileU0 + 0.245 * 0.25;
+  const coverU1 = tileU0 + 0.855 * 0.25;
+  const pageU0 = tileU0 + 0.885 * 0.25;
+  const pageU1 = tileU0 + 0.985 * 0.25;
+  const padV0 = tileV0 + 0.02 * 0.25;
+  const padV1 = tileV1 - 0.02 * 0.25;
 
-  for (let i = 0; i < pos.count; i++) {
-    let vx = pos.getX(i);
-    const vy = pos.getY(i);
-    const vz = pos.getZ(i);
+  // Build canonical upright book in canonical local frame:
+  //   X = thickness (T), Y = height (H), Z = cover depth (D)
+  //   Spine curves outward along +Z; recessed fore-edge pages face -Z.
+  const isFlatY = height < width && height < depth;
+  const isUprightZThin = !isFlatY && depth < width;
 
-    const nx = norm.getX(i);
-    const ny = norm.getY(i);
-    const nz = norm.getZ(i);
-
-    // Subtle rounded spine curve on -Z or -X depending on book proportions
-    const isThinX = width < depth;
-    if (isThinX && vz < 0) {
-      // Spine faces -Z or +Z: add gentle spine crown
-      vx *= 1.0 + (1.0 - (vy / Math.max(1e-4, halfH)) ** 2) * 0.04;
-    }
-
-    pos.setXYZ(i, vx, vy, vz);
-
-    const uOrig = uv.getX(i);
-    const vOrig = uv.getY(i);
-
-    // Map cover & spine faces into the variant's tile in bookCoverAtlas
-    // Within each tile:
-    //   u in [0.02..0.22] = Spine band (with vertical title & volume bands)
-    //   u in [0.23..0.86] = Front/Back Cover (with geometric motif & printed title)
-    //   u in [0.88..0.98] = Creamy milled paper page edges
-    let mappedU = tileU0 + uOrig * 0.25;
-    let mappedV = tileV0 + (0.04 + vOrig * 0.92) * 0.5;
-
-    if (Math.abs(ny) > 0.6) {
-      // Top / bottom paper page edges
-      mappedU = tileU0 + (0.89 + uOrig * 0.09) * 0.25;
-      mappedV = tileV0 + (0.08 + vOrig * 0.84) * 0.5;
-    } else if (isThinX) {
-      // Upright shelf book: width (X) is spine thickness, depth (Z) is cover depth
-      if (Math.abs(nx) > 0.6) {
-        // Side covers (+X / -X) -> map to Cover region [0.24..0.85]
-        mappedU = tileU0 + (0.24 + uOrig * 0.61) * 0.25;
-      } else {
-        // Spine (+Z / -Z) -> map to Spine region [0.03..0.21]
-        mappedU = tileU0 + (0.03 + uOrig * 0.18) * 0.25;
-      }
-    } else {
-      // Flat or front-facing book: depth (Z) or height (Y) is thickness
-      const isFlatY = height < width && height < depth;
-      if (isFlatY) {
-        // Flat horizontal book on table/shelf: Y is thickness, X/Z are cover dimensions
-        if (Math.abs(ny) > 0.6) {
-          // Top/Bottom Cover -> map to Cover region [0.24..0.85]
-          mappedU = tileU0 + (0.24 + uOrig * 0.61) * 0.25;
-          mappedV = tileV0 + (0.04 + vOrig * 0.92) * 0.5;
-        } else {
-          // Spine / page edges -> map to Spine region [0.03..0.21]
-          mappedU = tileU0 + (0.03 + uOrig * 0.18) * 0.25;
-        }
-      } else {
-        // Front-facing standing book: Z is thickness
-        if (Math.abs(nz) > 0.6) {
-          mappedU = tileU0 + (0.24 + uOrig * 0.61) * 0.25;
-        } else {
-          mappedU = tileU0 + (0.03 + uOrig * 0.18) * 0.25;
-        }
-      }
-    }
-
-    uv.setXY(i, Math.min(tileU1, Math.max(tileU0, mappedU)), Math.min(tileV1, Math.max(tileV0, mappedV)));
+  let T = width;
+  let H = height;
+  let D = depth;
+  if (isFlatY) {
+    T = height;
+    H = width;
+    D = depth;
+  } else if (isUprightZThin) {
+    T = depth;
+    H = height;
+    D = width;
   }
 
-  pos.needsUpdate = true;
+  // Real physical book proportions: cover boards wrap & overhang recessed page block,
+  // and a naturally arched curved spine completely encloses the +Z spine face.
+  const boardT = Math.min(T * 0.18, Math.max(0.0024, T * 0.11));
+  const overhangY = Math.min(0.0055, H * 0.024);
+  const overhangFore = Math.min(0.006, D * 0.032);
+  const spineCrown = Math.min(0.011, Math.max(0.0042, T * 0.28));
+  const spineBaseZ = D * 0.5 - spineCrown;
+  const shoulderSkirt = Math.min(0.0035, D * 0.025);
+
+  const pageT = Math.max(0.003, T - boardT * 2.08);
+  const pageH = Math.max(0.02, H - overhangY * 2.0);
+  // Keep page block strictly behind spineBaseZ so ivory pages ONLY show on top, bottom & back fore-edge (-Z)
+  const pageMinZ = -D * 0.5 + overhangFore;
+  const pageMaxZ = spineBaseZ - 0.0018;
+  const pageD = Math.max(0.02, pageMaxZ - pageMinZ);
+  const pageCenterZ = (pageMinZ + pageMaxZ) * 0.5;
+
+  const parts: THREE.BufferGeometry[] = [];
+
+  // 1) Recessed Cream Paper Page Block (visible ONLY on top +Y, bottom -Y, and back fore-edge -Z)
+  const pageRaw = new THREE.BoxGeometry(pageT, pageH, pageD, 1, 2, 1);
+  // Subtle concave fore-edge curve on -Z pages (like a real read book!)
+  const pPos = pageRaw.attributes.position;
+  for (let i = 0; i < pPos.count; i++) {
+    if (pPos.getZ(i) < 0) {
+      const nx = pPos.getX(i) / Math.max(1e-4, pageT * 0.5);
+      pPos.setZ(i, pPos.getZ(i) + (1.0 - nx * nx) * Math.min(0.0028, pageT * 0.12));
+    }
+  }
+  pPos.needsUpdate = true;
+  pageRaw.computeVertexNormals();
+  pageRaw.translate(0, 0, pageCenterZ);
+  parts.push(remapPartUVs(pageRaw, pageU0, pageU1, padV0, padV1));
+
+  // 2) Front (+X) & Back (-X) Thick Overhanging Cover Boards (tuck cleanly into spine shoulder)
+  const coverMinZ = -D * 0.5;
+  const coverMaxZ = spineBaseZ + 0.0008;
+  const coverD = Math.max(0.02, coverMaxZ - coverMinZ);
+  const coverCenterZ = (coverMinZ + coverMaxZ) * 0.5;
+  for (const side of [-1, 1] as const) {
+    const boardRaw = new THREE.BoxGeometry(boardT, H, coverD, 1, 2, 2);
+    // Subtle French hinge crease indentation right next to the spine (+Z edge)
+    const bPos = boardRaw.attributes.position;
+    const halfCD = coverD * 0.5;
+    for (let i = 0; i < bPos.count; i++) {
+      const bz = bPos.getZ(i);
+      const bx = bPos.getX(i);
+      if (bz > halfCD * 0.72 && bz < halfCD * 0.96 && bx * side > 0) {
+        bPos.setX(i, bx - side * boardT * 0.24);
+      }
+    }
+    bPos.needsUpdate = true;
+    boardRaw.computeVertexNormals();
+    boardRaw.translate(side * (T * 0.5 - boardT * 0.5), 0, coverCenterZ);
+    parts.push(remapPartUVs(boardRaw, coverU0, coverU1, padV0, padV1));
+  }
+
+  // 3) Naturally Arched Curved Spine Shell (+Z outward face, 10 smooth radial arch segments)
+  const spineHalfX = T * 0.5 + 0.0003;
+  const archShape = new THREE.Shape();
+  const segs = 10;
+  // Left shoulder skirt overlapping cover board seamlessly -> smooth outward crown arch -> right shoulder skirt
+  archShape.moveTo(-spineHalfX, -shoulderSkirt);
+  for (let s = 0; s <= segs; s++) {
+    const t = s / segs;
+    const ang = Math.PI * (1 - t); // PI (-X) -> 0 (+X)
+    const sx = Math.cos(ang) * spineHalfX;
+    // Smooth elliptical crown arching outward in +Y (becomes +Z after rotateX(+PI/2))
+    const sy = Math.sin(ang) * spineCrown;
+    archShape.lineTo(sx, sy);
+  }
+  archShape.lineTo(spineHalfX, -shoulderSkirt);
+  // Inner concave arc returning from +X to -X
+  const innerHalfX = Math.max(0.001, spineHalfX - boardT * 0.95);
+  const innerCrown = Math.max(0.0006, spineCrown - boardT * 0.88);
+  archShape.lineTo(innerHalfX, -shoulderSkirt);
+  for (let s = segs; s >= 0; s--) {
+    const t = s / segs;
+    const ang = Math.PI * (1 - t);
+    const sx = Math.cos(ang) * innerHalfX;
+    const sy = Math.sin(ang) * innerCrown - 0.0006;
+    archShape.lineTo(sx, sy);
+  }
+  archShape.lineTo(-innerHalfX, -shoulderSkirt);
+  archShape.closePath();
+
+  const spineRaw = new THREE.ExtrudeGeometry(archShape, {
+    depth: H,
+    bevelEnabled: false,
+    steps: 1,
+    curveSegments: 4,
+  });
+  // ExtrudeGeometry extrudes along +Z from 0..H.
+  // rotateX(+Math.PI / 2) maps (x, y, z) -> (x, -z, +y), so the arch (+y) points OUTWARD (+Z)!
+  spineRaw.rotateX(Math.PI / 2);
+  spineRaw.translate(0, H * 0.5, spineBaseZ);
+
+  // Assign smooth arc-length cylindrical spine UVs so vertical typography, color blocks & obi wrap naturally
+  const spineNonIdx = spineRaw.index ? spineRaw.toNonIndexed() : spineRaw;
+  const sPos = spineNonIdx.attributes.position;
+  const sUv = spineNonIdx.attributes.uv;
+  for (let i = 0; i < sPos.count; i++) {
+    const nx = THREE.MathUtils.clamp(sPos.getX(i) / Math.max(1e-4, spineHalfX), -1, 1);
+    // Arc-length normalized U from left (-X = 0) across crown (0 = 0.5) to right (+X = 1)
+    const ux = 1.0 - Math.acos(nx) / Math.PI;
+    const vy = THREE.MathUtils.clamp((sPos.getY(i) / Math.max(1e-4, H)) + 0.5, 0, 1);
+    sUv.setXY(
+      i,
+      spineU0 + ux * (spineU1 - spineU0),
+      padV0 + vy * (padV1 - padV0)
+    );
+  }
+  sUv.needsUpdate = true;
+  spineNonIdx.computeVertexNormals();
+  if (spineNonIdx !== spineRaw) spineRaw.dispose();
+  parts.push(spineNonIdx);
+
+  const merged = BufferGeometryUtils.mergeGeometries(parts, false);
+  for (const p of parts) p.dispose();
+  if (!merged) {
+    return new THREE.BoxGeometry(width, height, depth);
+  }
+
+  // Rotate from canonical (X=T, Y=H, Z=D, spine=+Z) to requested orientation
+  if (isFlatY) {
+    // Rotate +90 deg around Z: local X (thickness) -> +Y, local Y (height) -> -X, local Z (depth/spine) stays +Z
+    merged.rotateZ(Math.PI / 2);
+  } else if (isUprightZThin) {
+    // Rotate +90 deg around Y: local Z (depth/spine) -> +X (spine faces outward!), local X (thickness) -> -Z
+    merged.rotateY(Math.PI / 2);
+  }
+
+  merged.computeVertexNormals();
+  return merged;
+}
+
+/**
+ * Builds a sculpted 16-bit / 32-bit retro game cartridge geometry (SFC / Famicom / GB style)
+ * with top grip ridges, stepped shoulder bevels, recessed front art sticker bay, and bottom pin bay.
+ */
+export function createRetroCartridgeGeometry(
+  width = 0.115,
+  height = 0.082,
+  depth = 0.020
+): THREE.BufferGeometry {
+  const parts: THREE.BufferGeometry[] = [];
+  const mainBody = createBeveledBox(width, height, depth, 0.0035, 2);
+  parts.push(mainBody.index ? mainBody.toNonIndexed() : mainBody);
+
+  // Raised top-left & top-right grip ridges characteristic of classic cartridges
+  for (let r = 0; r < 3; r++) {
+    const ry = height * 0.30 + r * (height * 0.075);
+    const ridge = new THREE.BoxGeometry(width * 0.86, height * 0.024, depth + 0.0026);
+    ridge.translate(0, ry, 0);
+    parts.push(ridge.index ? ridge.toNonIndexed() : ridge);
+  }
+
+  // Slightly stepped lower connector skirt
+  const lowerLip = new THREE.BoxGeometry(width * 0.82, height * 0.16, depth * 0.78);
+  lowerLip.translate(0, -height * 0.44, 0);
+  parts.push(lowerLip.index ? lowerLip.toNonIndexed() : lowerLip);
+
+  const merged = BufferGeometryUtils.mergeGeometries(parts, false);
+  for (const p of parts) p.dispose();
+  if (!merged) return createBeveledBox(width, height, depth, 0.003, 2);
+  merged.computeVertexNormals();
+  return merged;
+}
+
+/**
+ * Builds a 12-inch vinyl LP cardboard jacket with clean UVs mapped into
+ * `textures.vinylSleeveAtlas` (4x2 = 8 distinct album covers).
+ * Local frame: X = sleeve thickness (0.005..0.009m), Y = 0.315m, Z = 0.315m.
+ * Spine faces +Z; square album cover art displays cleanly on ±X faces!
+ */
+export function createVinylSleeveGeometry(
+  thickness = 0.007,
+  size = 0.315,
+  variantIndex = 0
+): THREE.BufferGeometry {
+  const idx = ((variantIndex % 8) + 8) % 8;
+  const col = idx % 4;
+  const row = Math.floor(idx / 4);
+  const tileU0 = col * 0.25;
+  const tileV1 = 1.0 - row * 0.5;
+  const tileV0 = tileV1 - 0.5;
+
+  const spineU0 = tileU0 + 0.005 * 0.25;
+  const spineU1 = tileU0 + 0.074 * 0.25;
+  const artU0 = tileU0 + 0.082 * 0.25;
+  const artU1 = tileU0 + 0.992 * 0.25;
+  const padV0 = tileV0 + 0.01 * 0.5;
+  const padV1 = tileV1 - 0.01 * 0.5;
+
+  const geo = new THREE.BoxGeometry(thickness, size, size, 1, 1, 1);
+  const norm = geo.attributes.normal;
+  const uv = geo.attributes.uv;
+  for (let i = 0; i < uv.count; i++) {
+    const nx = norm.getX(i);
+    const uOrig = uv.getX(i);
+    const vOrig = uv.getY(i);
+    if (Math.abs(nx) > 0.6) {
+      // Front/Back 12-inch square cover art
+      uv.setXY(i, artU0 + uOrig * (artU1 - artU0), padV0 + vOrig * (padV1 - padV0));
+    } else {
+      // Narrow printed jacket spine & edges
+      uv.setXY(i, spineU0 + uOrig * (spineU1 - spineU0), padV0 + vOrig * (padV1 - padV0));
+    }
+  }
   uv.needsUpdate = true;
-  geo.computeVertexNormals();
   return geo;
 }
+

@@ -8,7 +8,10 @@ import {
   createTurnedLegGeometry,
 } from '../geometries';
 import { createMirrorSurfaceShaderMaterial } from '../pipeline';
-import { mergeStaticGroupToSingleMesh } from '../SceneManager';
+import {
+  mergeDynamicSubtreeMeshes,
+  mergeStaticGroupToSingleMesh,
+} from '../SceneManager';
 import {
   createTabletopPenSet,
   createTabletopTrinketCluster,
@@ -133,13 +136,16 @@ export function buildEntryway(
   );
   doorThreshold.position.set(0, 0.012, 0);
   frontDoorFrame.add(doorThreshold);
-  group.add(frontDoorFrame);
+  // Mount the exterior front door frame on structureGroup (like interior doors) so the
+  // exterior West wall opening NEVER leaks bright sky void when viewed from Kitchen/Dining!
+  mergeDynamicSubtreeMeshes(frontDoorFrame, outlines, 'FrontDoorFrameMerged');
+  ctx.structureGroup.add(frontDoorFrame);
 
   // Hinged Armored Door Leaf Pivot (hinged at North jamb Z = 4.06, leaf extends along +Z by 1.08m)
   const doorPivot = new THREE.Group();
   doorPivot.userData.dynamic = true;
   doorPivot.position.set(-7.94, -0.08, 4.06);
-  group.add(doorPivot);
+  ctx.structureGroup.add(doorPivot);
 
   const doorPanel = new THREE.Mesh(
     createBeveledBox(0.072, 2.26, 1.06, 0.009, 3),
@@ -224,6 +230,9 @@ export function buildEntryway(
   danglingChain.position.set(0.056, 1.29, 0.98);
   danglingChain.rotation.x = 0.08;
   doorPivot.add(danglingChain);
+
+  // Merge all 13 rigid armored door leaf meshes into 1 single dynamic draw call
+  mergeDynamicSubtreeMeshes(doorPivot, outlines, 'FrontDoorLeafMerged');
 
   const frontDoorColliderId = 'door_col_door_front_entry';
   addBoxCollider(frontDoorColliderId, -7.96, 1.08, 4.60, 0.18, 2.30, 1.12);
@@ -435,7 +444,6 @@ export function buildEntryway(
   const succMat = mat({ color: 0x628c65, roughness: 0.68 });
   const petalGeo = createPlushBox(0.042, 0.022, 0.065, 0.009, 0.2);
   const petalsInst = new THREE.InstancedMesh(petalGeo, succMat, 8);
-  petalsInst.userData.dynamic = true;
   for (let l = 0; l < 8; l++) {
     const ang = (l / 8) * Math.PI * 2;
     _instPos.set(
@@ -490,7 +498,6 @@ export function buildEntryway(
 
   const solesInst = new THREE.InstancedMesh(soleGeo, soleMat, 4);
   solesInst.castShadow = true;
-  solesInst.userData.dynamic = true;
 
   const insolesInst = new THREE.InstancedMesh(insoleGeo, slipperInstMat, 4);
   insolesInst.userData.dynamic = true;

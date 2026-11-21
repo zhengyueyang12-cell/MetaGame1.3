@@ -7,23 +7,15 @@ import {
   EyeOff,
   FolderOpen,
   Image as ImageIcon,
-  Lightbulb,
-  Lock,
-  Minus,
   Monitor,
-  Plus,
-  Sun,
-  Volume2,
-  VolumeX,
+  SlidersHorizontal,
   Zap,
 } from 'lucide-react';
 import type {
-  AtmosphereMode,
   BasementPartId,
   HitFeedbackPayload,
   InteractResult,
   InventorySnapshot,
-  PipelineSettings,
   RoomId,
   ViewMode,
 } from '../game/types';
@@ -31,8 +23,6 @@ import type {
 interface HudOverlayProps {
   currentRoom: { id: RoomId; label: string };
   viewMode: ViewMode;
-  atmosphere: AtmosphereMode;
-  settings: PipelineSettings;
   hoverTarget: { label: string; actionLabel: string } | null;
   inspectMessage: InteractResult | null;
   discoveredClues: number;
@@ -47,12 +37,6 @@ interface HudOverlayProps {
   onToggleDock: () => void;
   onSelectRoom: (room: RoomId) => void;
   onSelectViewMode: (mode: ViewMode) => void;
-  onSelectAtmosphere: (mode: AtmosphereMode) => void;
-  onToggleSetting: (key: Exclude<keyof PipelineSettings, 'brightness'>) => void;
-  onChangeBrightness: (value: number) => void;
-  livingLightOn: boolean;
-  onToggleLivingLight: () => void;
-  onRequestPointerLock: () => void;
   onDismissInspect: () => void;
   onDismissRealityAlert: () => void;
   onOpenComputer: () => void;
@@ -62,26 +46,10 @@ interface HudOverlayProps {
   inventory: InventorySnapshot;
   hitFeedback: HitFeedbackPayload | null;
   onOpenInventory: () => void;
+  onOpenSettings: () => void;
   onSwitchAmmo: () => void;
   onOpenPaperNote: () => void;
 }
-
-const ROOM_ITEMS: { id: RoomId; label: string }[] = [
-  { id: 'living', label: '客厅' },
-  { id: 'entryway', label: '玄关' },
-  { id: 'dining', label: '餐厅' },
-  { id: 'kitchen', label: '厨房' },
-  { id: 'bedroom', label: '卧室' },
-  { id: 'bathroom', label: '浴室' },
-  { id: 'basement', label: '地下室' },
-];
-
-const ATMOSPHERE_ITEMS: { id: AtmosphereMode; label: string }[] = [
-  { id: 'daylight', label: '日光' },
-  { id: 'sunset', label: '黄昏' },
-  { id: 'midnight', label: '深夜' },
-  { id: 'meta', label: '异常' },
-];
 
 const PART_ITEMS: { id: BasementPartId; shortLabel: string }[] = [
   { id: 'part_pcie_card', shortLabel: 'PCI-E卡' },
@@ -96,8 +64,6 @@ const PANEL_CLS =
 export function HudOverlay({
   currentRoom,
   viewMode,
-  atmosphere,
-  settings,
   hoverTarget,
   inspectMessage,
   discoveredClues,
@@ -112,12 +78,6 @@ export function HudOverlay({
   onToggleDock,
   onSelectRoom,
   onSelectViewMode,
-  onSelectAtmosphere,
-  onToggleSetting,
-  onChangeBrightness,
-  livingLightOn,
-  onToggleLivingLight,
-  onRequestPointerLock,
   onDismissInspect,
   onDismissRealityAlert,
   onOpenComputer,
@@ -127,6 +87,7 @@ export function HudOverlay({
   inventory,
   hitFeedback,
   onOpenInventory,
+  onOpenSettings,
   onSwitchAmmo,
   onOpenPaperNote,
 }: HudOverlayProps) {
@@ -134,13 +95,6 @@ export function HudOverlay({
   const equippedItem =
     inventory.equippedSlot !== null ? inventory.slots[inventory.equippedSlot] ?? null : null;
   const ownedItemCount = inventory.slots.filter(Boolean).length;
-  const brightnessPct = Math.round((settings.brightness ?? 1.15) * 100);
-  const cycleBrightnessPreset = () => {
-    const presets = [0.85, 1.0, 1.15, 1.35, 1.55];
-    const curr = settings.brightness ?? 1.15;
-    const next = presets.find((p) => p > curr + 0.04) ?? presets[0];
-    onChangeBrightness(next);
-  };
 
   return (
     <div className="pointer-events-none fixed inset-0 z-10 flex flex-col justify-between p-2.5 sm:p-3">
@@ -177,7 +131,7 @@ export function HudOverlay({
                 </span>
                 <span className="text-white/30 hidden sm:inline">·</span>
                 <span className="hidden sm:inline text-[#cbb8de]/90">
-                  F 互动 · B 背包 · Q 装备 · 滚轮切换
+                  F 互动 · B 背包与设置 · Q 装备 · 滚轮切换
                 </span>
               </div>
 
@@ -240,7 +194,7 @@ export function HudOverlay({
           )}
         </div>
 
-        {/* Top-Right Compact Utility Buttons (folds away cleanly with dockCollapsed!) */}
+        {/* Top-Right Compact Utility Buttons */}
         {!dockCollapsed && (
           <div className={`pointer-events-auto flex flex-wrap items-center gap-1 p-1 ${PANEL_CLS}`}>
             <button
@@ -250,6 +204,14 @@ export function HudOverlay({
             >
               <Backpack className="h-3 w-3 text-[#7ee0c0]" />
               <span>背包[B]{ownedItemCount > 0 ? `(${ownedItemCount})` : ''}</span>
+            </button>
+            <button
+              type="button"
+              onClick={onOpenSettings}
+              className="flex items-center gap-1 rounded border border-white/15 bg-white/8 px-2 py-1 text-[11px] font-medium text-[#f2eafc] transition-colors hover:bg-white/18 cursor-pointer whitespace-nowrap"
+            >
+              <SlidersHorizontal className="h-3 w-3 text-[#ffd4a3]" />
+              <span>设置</span>
             </button>
             <button
               type="button"
@@ -289,7 +251,7 @@ export function HudOverlay({
         )}
       </div>
 
-      {/* Center Reticle, Hitmarker (ONLY on special catches/hits, never walls) & Compact Hover Prompt */}
+      {/* Center Reticle, Hitmarker & Compact Hover Prompt */}
       {viewMode === 'first-person' && !contextLost && (
         <div className="pointer-events-none fixed inset-0 flex flex-col items-center justify-center">
           <div className="relative flex items-center justify-center">
@@ -362,13 +324,9 @@ export function HudOverlay({
         </div>
       )}
 
-      {/* Minimal Compact Equipped Item Chip (Bottom-Right, semi-transparent + thin outline) */}
+      {/* Minimal Compact Equipped Item Chip (Bottom-Right) */}
       {viewMode === 'first-person' && !contextLost && equippedItem && (
-        <div
-          className={`pointer-events-auto fixed right-3 z-20 px-2.5 py-1.5 ${
-            dockCollapsed ? 'bottom-3' : 'bottom-16'
-          } ${PANEL_CLS}`}
-        >
+        <div className={`pointer-events-auto fixed bottom-3 right-3 z-20 px-2.5 py-1.5 ${PANEL_CLS}`}>
           <div className="flex items-center gap-2 text-[11px]">
             <span className="font-medium text-[#fff1e4]">{equippedItem.shortName}</span>
             {equippedItem.id === 'toy_gun' ? (
@@ -409,7 +367,7 @@ export function HudOverlay({
         </div>
       )}
 
-      {/* Bottom Area: Compact Toasts + One-Click Collapsible Control Bar */}
+      {/* Bottom Area: Clean Toasts + Subtle Pointer-Lock / Overview Hint Only */}
       <div className="flex flex-col items-center gap-1.5">
         {realityAlert && (
           <div className="pointer-events-auto w-full max-w-md rounded-lg border border-rose-300/45 bg-[#211022]/70 px-3 py-1.5 shadow-lg">
@@ -433,7 +391,9 @@ export function HudOverlay({
         )}
 
         {inspectMessage && (
-          <div className={`pointer-events-auto w-full max-w-md px-3.5 py-2.5 ${PANEL_CLS} bg-[#150f22]/72`}>
+          <div
+            className={`pointer-events-auto w-full max-w-md px-3.5 py-2.5 ${PANEL_CLS} bg-[#150f22]/72`}
+          >
             <div className="flex items-start justify-between gap-3">
               <div>
                 <p className="text-xs font-semibold text-[#ffbe94]">{inspectMessage.title}</p>
@@ -452,186 +412,21 @@ export function HudOverlay({
           </div>
         )}
 
-        {/* Compact Semi-Transparent Outlined Bottom Control Bar (folded completely when dockCollapsed=true) */}
-        {!dockCollapsed && (
-          <div className={`pointer-events-auto w-full max-w-[820px] px-2.5 py-1.5 ${PANEL_CLS}`}>
-            {/* Row 1: Rooms + Overview + Pointer Lock */}
-            <div className="flex flex-wrap items-center justify-between gap-1.5 border-b border-white/15 pb-1.5">
-              <div className="flex flex-wrap items-center gap-1">
-                {ROOM_ITEMS.map((r) => {
-                  const active = viewMode === 'first-person' && currentRoom.id === r.id;
-                  return (
-                    <button
-                      key={r.id}
-                      type="button"
-                      onClick={() => onSelectRoom(r.id)}
-                      className={`whitespace-nowrap shrink-0 rounded border px-2 py-0.5 text-[11px] font-medium transition-colors cursor-pointer ${
-                        active
-                          ? 'border-[#ffd4b8]/60 bg-[#ffb085]/90 text-[#1c132b]'
-                          : 'border-white/15 bg-white/8 text-[#eee5fa] hover:bg-white/18'
-                      }`}
-                    >
-                      {r.label}
-                    </button>
-                  );
-                })}
-              </div>
+        {viewMode === 'overview' && !contextLost && (
+          <button
+            type="button"
+            onClick={() => onSelectViewMode('first-person')}
+            className={`pointer-events-auto flex items-center gap-1.5 px-3 py-1.5 text-[11.5px] font-medium text-[#f8eefc] hover:bg-[#24193b]/80 transition cursor-pointer ${PANEL_CLS}`}
+          >
+            <Eye className="h-3.5 w-3.5 text-[#ffb88c]" />
+            <span>公寓俯瞰模式 · 点击返回第一人称</span>
+          </button>
+        )}
 
-              <div className="flex items-center gap-1">
-                <button
-                  type="button"
-                  onClick={() =>
-                    onSelectViewMode(viewMode === 'first-person' ? 'overview' : 'first-person')
-                  }
-                  className={`flex items-center gap-1 whitespace-nowrap shrink-0 rounded border px-2 py-0.5 text-[11px] font-medium transition-colors cursor-pointer ${
-                    viewMode === 'overview'
-                      ? 'border-[#c5aef7]/60 bg-[#9b7ce0]/90 text-[#140d21]'
-                      : 'border-white/15 bg-white/8 text-[#eee5fa] hover:bg-white/18'
-                  }`}
-                >
-                  <Eye className="h-3 w-3" />
-                  <span>{viewMode === 'overview' ? '第一人称' : '俯瞰'}</span>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={onRequestPointerLock}
-                  className={`flex items-center gap-1 whitespace-nowrap shrink-0 rounded border px-2 py-0.5 text-[11px] font-medium transition-colors cursor-pointer ${
-                    isPointerLocked
-                      ? 'border-[#ffb88c]/55 bg-[#ffb085]/25 text-[#ffd2b5]'
-                      : 'border-white/15 bg-white/8 text-[#eee5fa] hover:bg-white/18'
-                  }`}
-                >
-                  <Lock className="h-3 w-3" />
-                  <span>{isPointerLocked ? '已锁定(ESC)' : '锁定视角'}</span>
-                </button>
-              </div>
-            </div>
-
-            {/* Row 2: Atmosphere + Brightness + Living Light + Render Toggles */}
-            <div className="mt-1.5 flex flex-wrap items-center justify-between gap-1.5">
-              <div className="flex items-center gap-1">
-                {ATMOSPHERE_ITEMS.map((a) => {
-                  const active = atmosphere === a.id;
-                  return (
-                    <button
-                      key={a.id}
-                      type="button"
-                      onClick={() => onSelectAtmosphere(a.id)}
-                      className={`whitespace-nowrap shrink-0 rounded border px-1.5 py-0.5 text-[10.5px] font-medium transition-colors cursor-pointer ${
-                        active
-                          ? a.id === 'meta'
-                            ? 'border-rose-300/60 bg-[#e34b74]/85 text-white'
-                            : a.id === 'daylight'
-                              ? 'border-[#ffe29c]/60 bg-[#f5b95f]/90 text-[#1c132b]'
-                              : 'border-[#b99ff2]/60 bg-[#7c61b8]/85 text-white'
-                          : 'border-white/12 bg-white/6 text-[#dfd3ed] hover:bg-white/16'
-                      }`}
-                    >
-                      {a.label}
-                    </button>
-                  );
-                })}
-              </div>
-
-              <div className="flex flex-wrap items-center gap-1">
-                <div
-                  className="flex items-center overflow-hidden rounded border border-white/20 bg-white/8"
-                  title="调整画面明暗"
-                >
-                  <button
-                    type="button"
-                    onClick={() => onChangeBrightness((settings.brightness ?? 1.15) - 0.1)}
-                    aria-label="调暗画面"
-                    className="px-1 py-0.5 text-[#dfd3ed] hover:bg-white/16 cursor-pointer"
-                  >
-                    <Minus className="h-2.5 w-2.5" />
-                  </button>
-                  <button
-                    type="button"
-                    onClick={cycleBrightnessPreset}
-                    className="flex items-center gap-0.5 px-1.5 py-0.5 text-[10.5px] font-medium text-[#ffcca8] tabular-nums hover:bg-white/12 cursor-pointer whitespace-nowrap"
-                  >
-                    <Sun className="h-3 w-3 text-[#ffd28a]" />
-                    <span>{brightnessPct}%</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => onChangeBrightness((settings.brightness ?? 1.15) + 0.1)}
-                    aria-label="调亮画面"
-                    className="px-1 py-0.5 text-[#dfd3ed] hover:bg-white/16 cursor-pointer"
-                  >
-                    <Plus className="h-2.5 w-2.5" />
-                  </button>
-                </div>
-
-                <button
-                  type="button"
-                  onClick={onToggleLivingLight}
-                  className={`flex items-center gap-1 whitespace-nowrap shrink-0 rounded border px-1.5 py-0.5 text-[10.5px] font-medium cursor-pointer ${
-                    livingLightOn
-                      ? 'border-[#ffe28a]/55 bg-[#ffdf85]/25 text-[#fff0b8]'
-                      : 'border-white/15 bg-white/8 text-[#dfd3ed] hover:bg-white/16'
-                  }`}
-                >
-                  <Lightbulb
-                    className={`h-3 w-3 ${livingLightOn ? 'text-[#ffe48c]' : 'text-[#b5a3ca]'}`}
-                  />
-                  <span>客厅灯</span>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => onToggleSetting('celShading')}
-                  className={`whitespace-nowrap shrink-0 rounded border px-1.5 py-0.5 text-[10.5px] cursor-pointer ${
-                    settings.celShading
-                      ? 'border-[#ffb88c]/40 bg-white/16 text-[#ffcca8]'
-                      : 'border-white/12 bg-white/6 text-[#b5a3ca]'
-                  }`}
-                >
-                  暮紫着色
-                </button>
-                <button
-                  type="button"
-                  onClick={() => onToggleSetting('volumetricRays')}
-                  className={`whitespace-nowrap shrink-0 rounded border px-1.5 py-0.5 text-[10.5px] cursor-pointer ${
-                    settings.volumetricRays
-                      ? 'border-[#ffb88c]/40 bg-white/16 text-[#ffcca8]'
-                      : 'border-white/12 bg-white/6 text-[#b5a3ca]'
-                  }`}
-                >
-                  光束
-                </button>
-                <button
-                  type="button"
-                  onClick={() => onToggleSetting('inkOutlines')}
-                  className={`whitespace-nowrap shrink-0 rounded border px-1.5 py-0.5 text-[10.5px] cursor-pointer ${
-                    settings.inkOutlines
-                      ? 'border-[#ffb88c]/40 bg-white/16 text-[#ffcca8]'
-                      : 'border-white/12 bg-white/6 text-[#b5a3ca]'
-                  }`}
-                >
-                  描边
-                </button>
-                <button
-                  type="button"
-                  onClick={() => onToggleSetting('audioEnabled')}
-                  aria-label="切换音效"
-                  className={`flex items-center gap-0.5 whitespace-nowrap shrink-0 rounded border px-1.5 py-0.5 text-[10.5px] cursor-pointer ${
-                    settings.audioEnabled
-                      ? 'border-[#ffb88c]/40 bg-white/16 text-[#ffcca8]'
-                      : 'border-white/12 bg-white/6 text-[#b5a3ca]'
-                  }`}
-                >
-                  {settings.audioEnabled ? (
-                    <Volume2 className="h-3 w-3" />
-                  ) : (
-                    <VolumeX className="h-3 w-3" />
-                  )}
-                  <span>音效</span>
-                </button>
-              </div>
-            </div>
+        {viewMode === 'first-person' && !isPointerLocked && !contextLost && !inspectMessage && (
+          <div className="pointer-events-none rounded-md border border-white/18 bg-[#150f22]/52 px-3 py-1 text-[11px] text-[#e6daf3]/90">
+            点击画面锁定鼠标视角 · <span className="text-[#ffd2b5]">ESC</span> 解锁 ·{' '}
+            <span className="text-[#ffd2b5]">B</span> 背包与设置
           </div>
         )}
       </div>

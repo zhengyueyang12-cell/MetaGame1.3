@@ -4,6 +4,7 @@ import {
   createBeveledSlab,
 } from '../geometries';
 import { mergeStaticGroupToSingleMesh } from '../SceneManager';
+import { createErgonomicSwivelChair } from '../entities/buildErgonomicChair';
 import {
   type RoomBuildContext,
 } from './roomContext';
@@ -1759,7 +1760,6 @@ export function buildBasement(ctx: RoomBuildContext, playDoorAudio: (open: boole
     const totalSlots = 4 * 2 * slotsPerFace;
     const slotGeo = new THREE.BoxGeometry(0.014, 0.032, 0.006);
     const slotsInst = new THREE.InstancedMesh(slotGeo, rackSlotMat, totalSlots);
-    slotsInst.userData.dynamic = true;
     let slotIdx = 0;
 
     for (const sx of [-1, 1]) {
@@ -2486,7 +2486,6 @@ export function buildBasement(ctx: RoomBuildContext, playDoorAudio: (open: boole
   const deskLampGreenMat = mat({ color: 0x2d4e42, roughness: 0.36, metalness: 0.48 });
   const ceramicMugMat = mat({ color: 0xe6dfd0, roughness: 0.32, metalness: 0.05 });
   const coffeeMat = mat({ color: 0x24150e, roughness: 0.18, metalness: 0.06 });
-  const chairLeatherMat = mat({ color: 0x343836, roughness: 0.72, metalness: 0.05 });
   const solderStationMat = mat({ color: 0x3b5878, roughness: 0.42, metalness: 0.22 });
   const spongeYellowMat = mat({ color: 0xd9b245, roughness: 0.92, metalness: 0.0 });
   const smallPcbMat = mat({ color: 0x1e6b48, roughness: 0.42, metalness: 0.18 });
@@ -2819,69 +2818,25 @@ export function buildBasement(ctx: RoomBuildContext, playDoorAudio: (open: boole
 
   labRig.add(benchFrameGroup);
 
-  // 6. Dynamic Sliding & Swiveling Workshop Chair in Front of Workbench (1.2x scale, world 0.84, -3.20, -3.96)
-  const swivelChair = new THREE.Group();
+  // 6. Dynamic Ergonomic Workshop Swivel Chair (Matte Graphite Polymer Frame + Breathable Slate Mesh Cushion)
+  const { rootGroup: swivelChair, seatGroup: swivelSeat } = createErgonomicSwivelChair(
+    ctx.uniforms,
+    outlines,
+    {
+      plasticFrameHex: 0x2a2d35,
+      plasticAccentHex: 0x1e2027,
+      meshCushionHex: 0x465063,
+      meshBaseHex: '#3f4758',
+      meshPoreHex: '#191d26',
+      meshHighlightHex: 'rgba(182, 198, 224, 0.28)',
+      armPadHex: 0x22252d,
+      metalHex: 0xa2aab8,
+      initialSeatYaw: 0.48,
+    }
+  );
   swivelChair.name = 'base_swivel_chair';
-  swivelChair.userData.dynamic = true;
   swivelChair.position.set(0.84, -3.20, -3.96);
   swivelChair.scale.setScalar(1.2);
-
-  const swivelBase = new THREE.Group();
-  swivelBase.userData.dynamic = true;
-  swivelChair.add(swivelBase);
-
-  // 5-star caster base + wheels
-  const chairHub = new THREE.Mesh(new THREE.CylinderGeometry(0.038, 0.042, 0.065, 12), consoleCharcoalMat);
-  chairHub.position.y = 0.075;
-  swivelBase.add(chairHub);
-  for (let sp = 0; sp < 5; sp++) {
-    const ang = (sp / 5) * Math.PI * 2;
-    const legArm = new THREE.Mesh(createBeveledBox(0.28, 0.026, 0.032, 0.005, 1), consoleCharcoalMat);
-    legArm.position.set(Math.cos(ang) * 0.145, 0.062, Math.sin(ang) * 0.145);
-    legArm.rotation.y = -ang;
-    swivelBase.add(legArm);
-    const wheel = new THREE.Mesh(new THREE.CylinderGeometry(0.024, 0.024, 0.022, 10), rackDarkIronMat);
-    wheel.rotation.z = Math.PI * 0.5;
-    wheel.rotation.y = -ang;
-    wheel.position.set(Math.cos(ang) * 0.27, 0.024, Math.sin(ang) * 0.27);
-    swivelBase.add(wheel);
-  }
-  // Pneumatic gas lift cylinder
-  const gasLift = new THREE.Mesh(new THREE.CylinderGeometry(0.026, 0.030, 0.34, 12), rackDarkIronMat);
-  gasLift.position.y = 0.255;
-  swivelBase.add(gasLift);
-
-  // Swiveling upper seat + lumbar backrest + armrests
-  const swivelSeat = new THREE.Group();
-  swivelSeat.userData.dynamic = true;
-  swivelSeat.rotation.y = 0.48; // Slightly skewed naturally as if someone just stood up
-  swivelChair.add(swivelSeat);
-
-  const seatPan = new THREE.Mesh(createBeveledSlab(0.46, 0.068, 0.44, 0.06, 0.016), chairLeatherMat);
-  seatPan.position.set(0, 0.455, 0);
-  seatPan.castShadow = true;
-  outlines.addOutline(seatPan, 1.024);
-  swivelSeat.add(seatPan);
-  // Curved steel lumbar spine + scuffed backrest cushion
-  const spine = new THREE.Mesh(createBeveledBox(0.065, 0.38, 0.026, 0.005, 1), consoleCharcoalMat);
-  spine.position.set(0, 0.62, 0.235);
-  spine.rotation.x = 0.12;
-  swivelSeat.add(spine);
-  const backPad = new THREE.Mesh(createBeveledSlab(0.42, 0.34, 0.058, 0.05, 0.014), chairLeatherMat);
-  backPad.position.set(0, 0.78, 0.22);
-  backPad.rotation.x = 0.10;
-  backPad.castShadow = true;
-  outlines.addOutline(backPad, 1.024);
-  swivelSeat.add(backPad);
-  // Twin curved armrests
-  for (const ax of [-0.245, 0.245]) {
-    const post = new THREE.Mesh(createBeveledBox(0.024, 0.18, 0.032, 0.004, 1), consoleCharcoalMat);
-    post.position.set(ax, 0.54, 0.02);
-    swivelSeat.add(post);
-    const pad = new THREE.Mesh(createBeveledBox(0.052, 0.026, 0.26, 0.008, 2), chairLeatherMat);
-    pad.position.set(ax, 0.635, 0.01);
-    swivelSeat.add(pad);
-  }
   group.add(swivelChair);
   metaState.swivelChairs.push({
     id: 'base_swivel_chair',
@@ -5470,7 +5425,6 @@ export function buildBasement(ctx: RoomBuildContext, playDoorAudio: (open: boole
   const woodShavingGeo = new THREE.TorusGeometry(0.014, 0.0038, 5, 8, Math.PI * 1.42);
   const woodShavingCount = 58;
   const woodShavingsInst = new THREE.InstancedMesh(woodShavingGeo, shavingWoodMat, woodShavingCount);
-  woodShavingsInst.userData.dynamic = true;
   let shSeed = 51729;
   const shRand = () => {
     shSeed = (shSeed * 1664525 + 1013904223) >>> 0;
@@ -5506,7 +5460,6 @@ export function buildBasement(ctx: RoomBuildContext, playDoorAudio: (open: boole
   const ironFilingGeo = new THREE.BoxGeometry(0.014, 0.003, 0.005);
   const ironFilingCount = 68;
   const ironFilingsInst = new THREE.InstancedMesh(ironFilingGeo, ironFilingMat, ironFilingCount);
-  ironFilingsInst.userData.dynamic = true;
   for (let i = 0; i < ironFilingCount; i++) {
     const fx = -0.46 + shRand() * 1.06;
     const fz = -0.18 + shRand() * 0.50;

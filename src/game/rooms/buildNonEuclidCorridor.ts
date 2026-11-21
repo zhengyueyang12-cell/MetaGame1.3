@@ -1,6 +1,14 @@
 import * as THREE from 'three';
-import { createBeveledBox, createBeveledSlab } from '../geometries';
-import { mergeStaticGroupToSingleMesh } from '../SceneManager';
+import {
+  createBeveledBox,
+  createBeveledSlab,
+  createDrapedTableclothGeometry,
+  createPlushBox,
+} from '../geometries';
+import {
+  mergeDynamicSubtreeMeshes,
+  mergeStaticGroupToSingleMesh,
+} from '../SceneManager';
 import type { RoomBuildContext } from './roomContext';
 
 /**
@@ -294,11 +302,25 @@ export function buildNonEuclidCorridor(
   endThreshold.position.set(0, 0.012, 0);
   endGroup.add(endThreshold);
 
-  // 1:1 Lit 180°-Rotated Return Entryway Interior right behind the pushable end door!
+  // =========================================================================
+  // 1:1 180°-Rotated Return Entryway + Open Archway + Dining & Kitchen Vista!
+  // Exact coordinate transform from real apartment (realX, realY, realZ) into
+  // endGroup local space (origin = doorway center at realX=-8.00, realY=-0.08, realZ=4.60):
+  //   localX = -8.00 - realX,   localY = realY + 0.08,   localZ = 4.60 - realZ
+  // This removes the old solid blocking wall so opening the end door reveals the
+  // exact Entryway, open archway, dining table & kitchen vista with zero visual jump!
+  // =========================================================================
   const dioWallMat = mat({
     map: textures.wallpaperLiving,
-    color: 0xf4f2fa,
-    roughness: 0.90,
+    color: 0xfff8fa,
+    roughness: 0.94,
+    metalness: 0.0,
+    celStrength: 0.56,
+  });
+  const dioDiningWallMat = mat({
+    map: textures.wallpaperLiving,
+    color: 0xfff8fa,
+    roughness: 0.94,
     metalness: 0.0,
     celStrength: 0.56,
   });
@@ -315,17 +337,50 @@ export function buildNonEuclidCorridor(
     roughness: 0.54,
     metalness: 0.04,
   });
+  const dioDrawerWhiteMat = mat({
+    color: 0xf7f2eb,
+    roughness: 0.56,
+    metalness: 0.02,
+  });
   const dioCeilMat = mat({
     color: 0xf4f2fa,
     roughness: 0.92,
     metalness: 0.0,
     celStrength: 0.48,
   });
+  const dioKitchenTileMat = mat({
+    map: textures.kitchenTile,
+    color: 0xf4eef7,
+    roughness: 0.52,
+    metalness: 0.04,
+  });
+  const dioTableclothMat = mat({
+    map: textures.tableclothPink,
+    color: 0xfafbf8,
+    roughness: 0.84,
+    metalness: 0.0,
+    side: THREE.DoubleSide,
+  });
+  const dioMossCushionMat = mat({
+    map: textures.plushFabric,
+    color: 0x647d43,
+    roughness: 0.86,
+    metalness: 0.0,
+  });
+  const dioWinGlowMat = mat({
+    color: 0xf6efe6,
+    emissive: new THREE.Color(0xffe8ce),
+    emissiveIntensity: 0.42,
+    roughness: 0.48,
+    metalness: 0.0,
+  });
 
-  const dioDepth = 6.2;
+  // --- A. ENTRYWAY FLOOR, SUNKEN GENKAN & RAISED STEP (localX: 0 .. -5.30) ---
+  const ENTRY_DEPTH = 5.30; // realX: -8.00 .. -2.70
+  const TOTAL_VISTA_DEPTH = 15.35; // realX: -8.00 .. +7.35 (Entryway + Dining + Kitchen!)
 
   const dioFloorGenkan = new THREE.Mesh(
-    new THREE.BoxGeometry(2.12, 0.14, 4.10),
+    new THREE.BoxGeometry(2.12, 0.14, 4.32),
     mat({ map: textures.genkanTile, color: 0xb9b0cf, roughness: 0.68 })
   );
   dioFloorGenkan.position.set(-1.06, -0.07, 0);
@@ -333,89 +388,357 @@ export function buildNonEuclidCorridor(
   endGroup.add(dioFloorGenkan);
 
   const dioStep = new THREE.Mesh(
-    createBeveledSlab(0.16, 0.095, 4.00, 0.02, 0.01),
+    createBeveledSlab(0.16, 0.095, 4.26, 0.02, 0.01),
     mat({ color: 0xc99474, roughness: 0.78 })
   );
   dioStep.position.set(-2.12, 0.044, 0);
   endGroup.add(dioStep);
 
+  // Entryway + Dining hardwood floor (localX: -2.12 .. -11.18, Y top = +0.08)
+  const dioWoodSpan = 11.18 - 2.12;
   const dioFloorWood = new THREE.Mesh(
-    makeBoxWorldUV(dioDepth - 2.12, 0.22, 4.20, 2.2, 1.0, 2.2),
+    makeBoxWorldUV(dioWoodSpan, 0.22, 6.60, 2.2, 1.0, 2.2),
     hallWoodFloorMat
   );
-  dioFloorWood.position.set(-2.12 - (dioDepth - 2.12) / 2, -0.03, 0);
+  dioFloorWood.position.set(-2.12 - dioWoodSpan / 2, -0.03, 1.08);
   dioFloorWood.receiveShadow = true;
   endGroup.add(dioFloorWood);
 
+  // Kitchen tiled floor (localX: -11.18 .. -15.35, Y top = +0.08)
+  const dioKitSpan = TOTAL_VISTA_DEPTH - 11.18;
+  const dioFloorKit = new THREE.Mesh(
+    makeBoxWorldUV(dioKitSpan, 0.22, 6.60, 2.0, 1.0, 2.0),
+    dioKitchenTileMat
+  );
+  dioFloorKit.position.set(-11.18 - dioKitSpan / 2, -0.03, 1.08);
+  dioFloorKit.receiveShadow = true;
+  endGroup.add(dioFloorKit);
+
+  // Continuous Entryway + Dining + Kitchen ceiling (Y bottom = 3.18 -> real Y = 3.10)
   const dioCeil = new THREE.Mesh(
-    new THREE.BoxGeometry(dioDepth + 0.2, 0.14, 4.30),
+    new THREE.BoxGeometry(TOTAL_VISTA_DEPTH + 0.2, 0.14, 6.80),
     dioCeilMat
   );
-  dioCeil.position.set(-dioDepth / 2, 3.25, 0);
+  dioCeil.position.set(-TOTAL_VISTA_DEPTH / 2, 3.25, 1.08);
   endGroup.add(dioCeil);
 
+  // --- B. ENTRYWAY SIDE WALLS (localX: 0 .. -5.30, localZ = -2.14 & +2.15) ---
   for (const [wz, sign] of [
-    [1.95, 1],
-    [-2.00, -1],
+    [2.15, 1],
+    [-2.14, -1],
   ] as const) {
     const sWall = new THREE.Mesh(
-      makeBoxWorldUV(dioDepth, 3.22, 0.16, 2.2, 2.2, 1.0),
+      makeBoxWorldUV(ENTRY_DEPTH, 3.22, 0.16, 2.2, 2.2, 1.0),
       dioWallMat
     );
-    sWall.position.set(-dioDepth / 2, 1.61, wz + sign * 0.08);
+    sWall.position.set(-ENTRY_DEPTH / 2, 1.61, wz + sign * 0.08);
     endGroup.add(sWall);
 
     const sWain = new THREE.Mesh(
-      makeBoxWorldUV(dioDepth, 0.92, 0.022, 1.8, 0.92, 1.0),
+      makeBoxWorldUV(ENTRY_DEPTH, 0.92, 0.022, 1.8, 0.92, 1.0),
       dioWainscotMat
     );
-    sWain.position.set(-dioDepth / 2, 0.46, wz - sign * 0.011);
+    sWain.position.set(-ENTRY_DEPTH / 2, 0.46, wz - sign * 0.011);
     endGroup.add(sWain);
 
     const sRail = new THREE.Mesh(
-      new THREE.BoxGeometry(dioDepth, 0.045, 0.042),
+      new THREE.BoxGeometry(ENTRY_DEPTH, 0.045, 0.042),
       hallOakTrimMat
     );
-    sRail.position.set(-dioDepth / 2, 0.93, wz - sign * 0.020);
+    sRail.position.set(-ENTRY_DEPTH / 2, 0.93, wz - sign * 0.020);
     endGroup.add(sRail);
   }
 
-  const dioBackWall = new THREE.Mesh(
-    makeBoxWorldUV(0.18, 3.28, 4.30, 1.0, 2.2, 2.2),
+  // --- C. OPEN ENTRYWAY-DINING ARCHWAY AT localX = -5.30 (realX = -2.70) ---
+  // North pilaster (realZ = 2.45..2.95 -> localZ = +1.65..+2.15)
+  const archNorthPil = new THREE.Mesh(
+    makeBoxWorldUV(0.18, 3.22, 0.56, 1.0, 2.2, 2.2),
     dioWallMat
   );
-  dioBackWall.position.set(-dioDepth - 0.09, 1.64, 0);
-  endGroup.add(dioBackWall);
+  archNorthPil.position.set(-ENTRY_DEPTH, 1.61, 1.90);
+  endGroup.add(archNorthPil);
 
+  // South pilaster (realZ = 5.75..6.74 -> localZ = -2.14..-1.15)
+  const archSouthPil = new THREE.Mesh(
+    makeBoxWorldUV(0.18, 3.22, 1.04, 1.0, 2.2, 2.2),
+    dioWallMat
+  );
+  archSouthPil.position.set(-ENTRY_DEPTH, 1.61, -1.65);
+  endGroup.add(archSouthPil);
+
+  // Archway overhead header (localY = 2.48..3.18, spanning open Z = -1.15..+1.65)
+  const archHeader = new THREE.Mesh(
+    makeBoxWorldUV(0.18, 0.72, 2.86, 1.0, 2.2, 2.2),
+    dioWallMat
+  );
+  archHeader.position.set(-ENTRY_DEPTH, 2.83, 0.25);
+  endGroup.add(archHeader);
+
+  // --- D. MATCHING 1:1 ENTRYWAY FURNISHINGS ---
+  // 1) Shoe Cabinet (realX = -5.15, realZ = 2.80 -> localX = -2.85, localZ = +1.80)
   const dioShoeCab = new THREE.Mesh(
-    createBeveledBox(1.56, 1.04, 0.44, 0.012, 2),
+    createBeveledBox(1.48, 0.88, 0.40, 0.012, 2),
     dioOakMat
   );
-  dioShoeCab.position.set(-2.55, 0.60, 1.66);
+  dioShoeCab.position.set(-2.85, 0.74, 1.80);
   endGroup.add(dioShoeCab);
 
-  const dioBench = new THREE.Mesh(
-    createBeveledBox(1.10, 0.44, 0.38, 0.012, 2),
+  const dioShoeTop = new THREE.Mesh(
+    createBeveledSlab(1.56, 0.030, 0.46, 0.025, 0.008),
     dioOakMat
   );
-  dioBench.position.set(-1.35, 0.22, -1.64);
-  endGroup.add(dioBench);
+  dioShoeTop.position.set(-2.85, 1.195, 1.80);
+  endGroup.add(dioShoeTop);
 
+  for (const dx of [-0.48, 0, 0.48]) {
+    const uDrw = new THREE.Mesh(
+      createBeveledBox(0.44, 0.18, 0.026, 0.006, 1),
+      dioDrawerWhiteMat
+    );
+    uDrw.position.set(-2.85 + dx, 1.04, 1.592);
+    endGroup.add(uDrw);
+    const lDrw = new THREE.Mesh(
+      createBeveledBox(0.44, 0.56, 0.026, 0.006, 1),
+      dioDrawerWhiteMat
+    );
+    lDrw.position.set(-2.85 + dx, 0.62, 1.592);
+    endGroup.add(lDrw);
+  }
+  const dioMiniPot = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.072, 0.055, 0.13, 12),
+    mat({ color: 0xdf9e7d, roughness: 0.65 })
+  );
+  dioMiniPot.position.set(-3.31, 1.28, 1.84);
+  endGroup.add(dioMiniPot);
+  const dioSucc = new THREE.Mesh(
+    new THREE.SphereGeometry(0.075, 10, 8),
+    mat({ color: 0x628c65, roughness: 0.68 })
+  );
+  dioSucc.scale.set(1, 0.65, 1);
+  dioSucc.position.set(-3.31, 1.36, 1.84);
+  endGroup.add(dioSucc);
+
+  // 2) Coat Rack + Hanging Pink Coat, Olive Jacket & Royal-Blue Umbrella Bin (realX=-7.28, realZ=6.12 -> localX=-0.72, localZ=-1.52)
+  const dioCoatBoard = new THREE.Mesh(
+    createBeveledBox(0.76, 0.12, 0.032, 0.008, 1),
+    dioOakMat
+  );
+  dioCoatBoard.position.set(-0.80, 1.66, -1.98);
+  endGroup.add(dioCoatBoard);
+
+  const dioPinkCoat = new THREE.Mesh(
+    createPlushBox(0.28, 0.82, 0.16, 0.04, 0.18),
+    mat({ color: 0xe07898, roughness: 0.78 })
+  );
+  dioPinkCoat.position.set(-0.60, 1.22, -1.86);
+  endGroup.add(dioPinkCoat);
+
+  const dioGreenCoat = new THREE.Mesh(
+    createPlushBox(0.26, 0.64, 0.15, 0.04, 0.16),
+    mat({ color: 0x5c8a58, roughness: 0.80 })
+  );
+  dioGreenCoat.position.set(-0.94, 1.30, -1.87);
+  endGroup.add(dioGreenCoat);
+
+  const dioUmbBin = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.145, 0.125, 0.48, 14),
+    mat({ color: 0x4668b8, roughness: 0.38, metalness: 0.18 })
+  );
+  dioUmbBin.position.set(-0.76, 0.24, -1.64);
+  endGroup.add(dioUmbBin);
+
+  // 3) Blue & Red Slippers on sunken Genkan floor
+  const dioBlueSlipMat = mat({ color: 0x5c6f9c, roughness: 0.78 });
+  const dioRedSlipMat = mat({ color: 0xc74e5e, roughness: 0.78 });
+  for (const [sx, sz, rotY, sMat] of [
+    [-1.45, 0.55, 0.1, dioBlueSlipMat],
+    [-1.45, 0.32, 0.08, dioBlueSlipMat],
+    [-1.75, -0.45, -1.4, dioRedSlipMat],
+    [-1.70, -0.66, -1.75, dioRedSlipMat],
+  ] as const) {
+    const slip = new THREE.Mesh(createBeveledSlab(0.115, 0.042, 0.26, 0.045, 0.008), sMat);
+    slip.position.set(sx, 0.022, sz);
+    slip.rotation.y = rotY;
+    endGroup.add(slip);
+  }
+
+  // 4) Full-Length Framed Mirror on right wall (realX=-4.40, realZ=6.62 -> localX=-3.60, localZ=-2.02)
+  const dioMirrorFrame = new THREE.Mesh(
+    createBeveledBox(0.78, 1.44, 0.038, 0.010, 1),
+    dioOakMat
+  );
+  dioMirrorFrame.position.set(-3.60, 1.56, -2.04);
+  endGroup.add(dioMirrorFrame);
+  const dioMirrorGlass = new THREE.Mesh(
+    new THREE.PlaneGeometry(0.62, 1.28),
+    mat({ color: 0xc8d2e2, roughness: 0.14, metalness: 0.55 })
+  );
+  dioMirrorGlass.position.set(-3.60, 1.56, -2.015);
+  endGroup.add(dioMirrorGlass);
+
+  // 5) Electrical Breaker Box beside door (realX=-7.84, realZ=3.68 -> localX=-0.16, localZ=+0.92)
+  const dioBreaker = new THREE.Mesh(
+    createBeveledBox(0.056, 0.32, 0.44, 0.010, 1),
+    dioDrawerWhiteMat
+  );
+  dioBreaker.position.set(-0.16, 1.80, 0.92);
+  endGroup.add(dioBreaker);
+
+  // Entryway flush ceiling lamp
   const dioLamp = new THREE.Mesh(
     new THREE.CircleGeometry(0.24, 16),
     roundLampGlowMat
   );
   dioLamp.rotation.x = Math.PI / 2;
-  dioLamp.position.set(-1.75, 3.16, 0);
+  dioLamp.position.set(-2.90, 3.16, 0);
   endGroup.add(dioLamp);
 
-  // Opaque light-blocking shroud behind diorama so corridor bays behind endGroup never bleed through
+  // --- E. DINING ROOM & KITCHEN VISTA BEYOND THE OPEN ARCHWAY (localX: -5.30 .. -15.35) ---
+  const DIN_KIT_DEPTH = TOTAL_VISTA_DEPTH - ENTRY_DEPTH; // 10.05m
+  // Right wall (real South Dining/Kitchen wall at Z = 6.74 -> localZ = -2.14)
+  const dioSouthDinWall = new THREE.Mesh(
+    makeBoxWorldUV(DIN_KIT_DEPTH, 3.22, 0.18, 2.2, 2.2, 1.0),
+    dioDiningWallMat
+  );
+  dioSouthDinWall.position.set(-ENTRY_DEPTH - DIN_KIT_DEPTH / 2, 1.61, -2.23);
+  endGroup.add(dioSouthDinWall);
+
+  // South Dining Window sunlight panel (realX = -1.45 -> localX = -6.55)
+  const dioSouthWin = new THREE.Mesh(new THREE.PlaneGeometry(1.42, 1.58), dioWinGlowMat);
+  dioSouthWin.position.set(-6.55, 1.82, -2.12);
+  endGroup.add(dioSouthWin);
+
+  // Left wall (real North Dining/Kitchen wall at Z = 0.25 -> localZ = +4.35)
+  const dioNorthDinWall = new THREE.Mesh(
+    makeBoxWorldUV(DIN_KIT_DEPTH, 3.22, 0.18, 2.2, 2.2, 1.0),
+    dioDiningWallMat
+  );
+  dioNorthDinWall.position.set(-ENTRY_DEPTH - DIN_KIT_DEPTH / 2, 1.61, 4.44);
+  endGroup.add(dioNorthDinWall);
+
+  // Far back wall (real East Kitchen wall at X = 7.35 -> localX = -15.35)
+  const dioFarEastWall = new THREE.Mesh(
+    makeBoxWorldUV(0.18, 3.22, 6.75, 1.0, 2.2, 2.2),
+    dioDiningWallMat
+  );
+  dioFarEastWall.position.set(-TOTAL_VISTA_DEPTH - 0.09, 1.61, 1.12);
+  endGroup.add(dioFarEastWall);
+
+  // Sunlit Kitchen East Window glow on far back wall (realZ = 4.95 -> localZ = -0.35)
+  const dioKitEastWin = new THREE.Mesh(new THREE.PlaneGeometry(1.50, 1.38), dioWinGlowMat);
+  dioKitEastWin.rotation.y = Math.PI / 2;
+  dioKitEastWin.position.set(-TOTAL_VISTA_DEPTH + 0.02, 1.88, -0.35);
+  endGroup.add(dioKitEastWin);
+
+  // Dining Table with Green Floral Tablecloth & 4 Moss-Green Dining Chairs (realX=0.32, realZ=4.25 -> localX=-8.32, localZ=+0.35)
+  const DIN_LX = -8.32;
+  const DIN_LZ = 0.35;
+  const dioTableTop = new THREE.Mesh(
+    createBeveledSlab(1.85, 0.04, 1.17, 0.04, 0.008),
+    dioOakMat
+  );
+  dioTableTop.position.set(DIN_LX, 0.96, DIN_LZ);
+  endGroup.add(dioTableTop);
+
+  const dioClothGeo = createDrapedTableclothGeometry(1.85, 1.17, 0.25);
+  const dioCloth = new THREE.Mesh(dioClothGeo, dioTableclothMat);
+  dioCloth.position.set(DIN_LX, 0.985, DIN_LZ);
+  endGroup.add(dioCloth);
+
+  for (const [tlx, tlz] of [
+    [-0.76, -0.44],
+    [0.76, -0.44],
+    [-0.76, 0.44],
+    [0.76, 0.44],
+  ] as const) {
+    const tLeg = new THREE.Mesh(new THREE.CylinderGeometry(0.028, 0.018, 0.88, 8), dioOakMat);
+    tLeg.position.set(DIN_LX + tlx, 0.52, DIN_LZ + tlz);
+    endGroup.add(tLeg);
+  }
+
+  for (const [cx, cz, backDir] of [
+    [-0.54, -0.84, -1],
+    [0.54, -0.84, -1],
+    [-0.54, 0.84, 1],
+    [0.54, 0.84, 1],
+  ] as const) {
+    const cSeat = new THREE.Mesh(createPlushBox(0.44, 0.05, 0.44, 0.02, 0.08), dioMossCushionMat);
+    cSeat.position.set(DIN_LX + cx, 0.56, DIN_LZ + cz);
+    endGroup.add(cSeat);
+    const cBack = new THREE.Mesh(createBeveledBox(0.45, 0.16, 0.032, 0.008, 1), dioOakMat);
+    cBack.position.set(DIN_LX + cx, 0.94, DIN_LZ + cz + backDir * 0.20);
+    endGroup.add(cBack);
+    for (const lx of [-0.17, 0.17]) {
+      for (const lz of [-0.17, 0.17]) {
+        const cLeg = new THREE.Mesh(new THREE.CylinderGeometry(0.014, 0.010, 0.46, 6), dioOakMat);
+        cLeg.position.set(DIN_LX + cx + lx, 0.31, DIN_LZ + cz + lz);
+        endGroup.add(cLeg);
+      }
+    }
+  }
+
+  // Dining Pendant Lamp Dome above the table
+  const dioPendant = new THREE.Mesh(
+    new THREE.ConeGeometry(0.24, 0.18, 16),
+    mat({ color: 0xe6eaf2, roughness: 0.28, metalness: 0.65 })
+  );
+  dioPendant.position.set(DIN_LX, 2.38, DIN_LZ);
+  endGroup.add(dioPendant);
+  const dioPendantBulb = new THREE.Mesh(new THREE.SphereGeometry(0.07, 10, 8), roundLampGlowMat);
+  dioPendantBulb.position.set(DIN_LX, 2.28, DIN_LZ);
+  endGroup.add(dioPendantBulb);
+
+  // Dining Sideboard Buffet (realX=0.32, realZ=6.38 -> localX=-8.32, localZ=-1.78)
+  const dioSideboard = new THREE.Mesh(
+    createBeveledBox(1.76, 0.84, 0.44, 0.012, 1),
+    dioOakMat
+  );
+  dioSideboard.position.set(-8.32, 0.52, -1.78);
+  endGroup.add(dioSideboard);
+
+  // Kitchen Breakfast Bar Divider (realX=3.18, realZ=3.82..6.74 -> localX=-11.18, localZ=-2.14..+0.78)
+  const dioBarWall = new THREE.Mesh(
+    createBeveledBox(0.32, 1.04, 2.94, 0.012, 1),
+    dioDiningWallMat
+  );
+  dioBarWall.position.set(-11.18, 0.60, -0.68);
+  endGroup.add(dioBarWall);
+  const dioBarTop = new THREE.Mesh(
+    createBeveledSlab(0.54, 0.048, 3.00, 0.02, 0.008),
+    dioOakMat
+  );
+  dioBarTop.position.set(-11.18, 1.13, -0.68);
+  endGroup.add(dioBarTop);
+
+  // Kitchen East Countertop & Upper Cabinets along far wall (localX = -14.88)
+  const dioKitCounter = new THREE.Mesh(
+    createBeveledBox(0.74, 0.90, 3.40, 0.012, 1),
+    dioDrawerWhiteMat
+  );
+  dioKitCounter.position.set(-14.92, 0.53, -0.45);
+  endGroup.add(dioKitCounter);
+  const dioKitUpperCab = new THREE.Mesh(
+    createBeveledBox(0.42, 0.78, 1.85, 0.012, 1),
+    dioOakMat
+  );
+  dioKitUpperCab.position.set(-15.08, 2.48, 1.78);
+  endGroup.add(dioKitUpperCab);
+
+  // Refrigerator silhouette at North Kitchen entrance (realX=3.86, realZ=0.76 -> localX=-11.86, localZ=+3.84)
+  const dioFridge = new THREE.Mesh(
+    createBeveledBox(0.82, 1.88, 0.70, 0.10, 3),
+    mat({ color: 0xf6e6c0, roughness: 0.22, metalness: 0.06 })
+  );
+  dioFridge.position.set(-11.86, 1.02, 3.84);
+  endGroup.add(dioFridge);
+
+  // Opaque light-blocking shroud strictly behind the far Kitchen wall so distant bays never bleed through
   const shroudBack = new THREE.Mesh(
-    new THREE.PlaneGeometry(6.4, 5.2),
+    new THREE.PlaneGeometry(8.6, 5.2),
     new THREE.MeshBasicMaterial({ color: 0x161024, side: THREE.DoubleSide })
   );
   shroudBack.rotation.y = Math.PI / 2;
-  shroudBack.position.set(-dioDepth - 0.24, 1.65, 0);
+  shroudBack.position.set(-TOTAL_VISTA_DEPTH - 0.28, 1.65, 1.08);
   endGroup.add(shroudBack);
 
   mergeStaticGroupToSingleMesh(endGroup, outlines, 'NonEuclidReturnEndMerged');
@@ -478,6 +801,8 @@ export function buildNonEuclidCorridor(
   endLed.position.set(0.064, 1.18, -0.94);
   endDoorPivot.add(endLed);
 
+  // Merge all 10 rigid end-door sub-meshes into a single dynamic draw call
+  mergeDynamicSubtreeMeshes(endDoorPivot, outlines, 'NonEuclidEndDoorLeafMerged');
   endGroup.add(endDoorPivot);
 
   registerInteractable(
