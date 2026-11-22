@@ -3738,7 +3738,7 @@ export function buildBasement(ctx: RoomBuildContext, playDoorAudio: (open: boole
   registerInteractable(
     'base_crt',
     '重型实验终端 · CRT',
-    '检索 DATA TRANSFERRED 日志',
+    '启动地下室终端',
     'basement',
     terminalHostGroup,
     () => {
@@ -3748,6 +3748,7 @@ export function buildBasement(ctx: RoomBuildContext, playDoorAudio: (open: boole
         message:
           '红色显像管屏幕跳动着双通道同步波形：“DATA TRANSFERRED · 现实锚点已写入 · 底层线缆正直连地板铁盖下方。她知道你下楼了。”',
         metaTrigger: true,
+        triggerBasementTerminal: true,
       };
     }
   );
@@ -3756,7 +3757,7 @@ export function buildBasement(ctx: RoomBuildContext, playDoorAudio: (open: boole
   registerInteractable(
     'base_char_generator',
     '修改现实人物生成器',
-    '检测全息投影与参数',
+    '检测全息投影 / 启动同步',
     'basement',
     generatorGroup,
     () => {
@@ -3766,6 +3767,7 @@ export function buildBasement(ctx: RoomBuildContext, playDoorAudio: (open: boole
         message:
           '蓝色冷却液槽内气泡骤然加速，红色机械臂微微校准——悬浮的线框人形全息投影闪过一帧畸变轮廓：“对象映射进度 98.4% · 显卡坞与地下核心同步中。”',
         metaTrigger: true,
+        triggerBasementTerminal: true,
       };
     }
   );
@@ -6110,6 +6112,153 @@ export function buildBasement(ctx: RoomBuildContext, playDoorAudio: (open: boole
     maxDrift: 0.022,
     reactivity: 1.14,
   });
+
+  // =========================================================================
+  // 11. MAINLINE STORY PICKUPS: 信物 (Keepsake) & 备用电池 (Battery)
+  // =========================================================================
+  // Quest Item 1: 银色心形信物 (Rack 2 middle shelf front lip, catching eye from the stairs)
+  const keepsakeGroup = new THREE.Group();
+  keepsakeGroup.position.set(-2.02, -2.298, -0.37);
+  keepsakeGroup.rotation.y = 0.25;
+  keepsakeGroup.userData.dynamic = true;
+  const keepsakeHitProxy = new THREE.Mesh(partHitProxyGeo, partHitProxyMat);
+  keepsakeHitProxy.position.y = 0.08;
+  keepsakeGroup.add(keepsakeHitProxy);
+
+  const keepsakeRibbonMat = mat({
+    color: 0xf488a8,
+    emissive: 0xd94e7a,
+    emissiveIntensity: 0.42,
+    roughness: 0.45,
+    metalness: 0.05,
+  });
+  const keepsakeSilverMat = mat({
+    color: 0xf4eef8,
+    emissive: 0xffc6da,
+    emissiveIntensity: 0.36,
+    roughness: 0.22,
+    metalness: 0.85,
+  });
+
+  const keepsakeBox = new THREE.Mesh(
+    createBeveledBox(0.15, 0.036, 0.13, 0.008, 2),
+    mat({ color: 0x3b2638, roughness: 0.55, metalness: 0.1 })
+  );
+  keepsakeBox.position.y = 0.018;
+  outlines.addOutline(keepsakeBox, 1.05);
+  keepsakeGroup.add(keepsakeBox);
+
+  const keepsakeRing = new THREE.Mesh(
+    new THREE.TorusGeometry(0.038, 0.007, 10, 20),
+    keepsakeSilverMat
+  );
+  keepsakeRing.rotation.x = Math.PI / 2;
+  keepsakeRing.position.set(0, 0.044, 0);
+  keepsakeGroup.add(keepsakeRing);
+
+  const keepsakeGem = new THREE.Mesh(
+    new THREE.OctahedronGeometry(0.024, 0),
+    keepsakeRibbonMat
+  );
+  keepsakeGem.scale.set(1.0, 0.55, 1.15);
+  keepsakeGem.position.set(0, 0.050, 0);
+  keepsakeGroup.add(keepsakeGem);
+
+  const keepsakeGlowLed = new THREE.Mesh(
+    new THREE.SphereGeometry(0.012, 10, 10),
+    new THREE.MeshBasicMaterial({ color: 0xffa6c9 })
+  );
+  keepsakeGlowLed.position.set(0.055, 0.042, 0.042);
+  keepsakeGroup.add(keepsakeGlowLed);
+  group.add(keepsakeGroup);
+  metaState.partMeshes['quest_keepsake'] = keepsakeGroup;
+
+  registerInteractable(
+    'quest_keepsake',
+    '她的心形信物',
+    '拾取信物',
+    'basement',
+    keepsakeGroup,
+    () => {
+      keepsakeGroup.visible = false;
+      metaState.collectedParts.add('quest_keepsake');
+      return {
+        title: '拾取关键道具：她的心形信物',
+        message:
+          '一枚系着淡粉色缎带的银质心形吊坠，背面刻着极细的编号。它似乎能通过地下室实验终端的身份校验。',
+        collectQuestItemId: 'quest_keepsake',
+      };
+    }
+  );
+
+  // Quest Item 2: 高能备用电池 (Front-left corner of the basement experimental workbench)
+  const batteryGroup = new THREE.Group();
+  batteryGroup.position.set(0.08, -2.360, -4.66);
+  batteryGroup.rotation.y = -0.34;
+  batteryGroup.userData.dynamic = true;
+  const batteryHitProxy = new THREE.Mesh(partHitProxyGeo, partHitProxyMat);
+  batteryHitProxy.position.y = 0.09;
+  batteryGroup.add(batteryHitProxy);
+
+  const batteryShellMat = mat({
+    color: 0xeab438,
+    roughness: 0.36,
+    metalness: 0.25,
+  });
+  const batteryCapMat = mat({
+    color: 0x262933,
+    roughness: 0.42,
+    metalness: 0.48,
+  });
+  const batteryBody = new THREE.Mesh(
+    createBeveledBox(0.16, 0.11, 0.095, 0.010, 2),
+    batteryShellMat
+  );
+  batteryBody.position.y = 0.055;
+  outlines.addOutline(batteryBody, 1.05);
+  batteryGroup.add(batteryBody);
+
+  const batteryTop = new THREE.Mesh(
+    createBeveledBox(0.164, 0.024, 0.098, 0.006, 2),
+    batteryCapMat
+  );
+  batteryTop.position.y = 0.114;
+  batteryGroup.add(batteryTop);
+
+  for (const tx of [-0.044, 0.044]) {
+    const post = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.011, 0.012, 0.024, 10),
+      goldPinMat
+    );
+    post.position.set(tx, 0.134, 0);
+    batteryGroup.add(post);
+  }
+  const chargeBar = new THREE.Mesh(
+    new THREE.BoxGeometry(0.092, 0.018, 0.008),
+    new THREE.MeshBasicMaterial({ color: 0x52ffbe })
+  );
+  chargeBar.position.set(0, 0.062, 0.049);
+  batteryGroup.add(chargeBar);
+  group.add(batteryGroup);
+  metaState.partMeshes['quest_battery'] = batteryGroup;
+
+  registerInteractable(
+    'quest_battery',
+    '高能备用电池组',
+    '拾取电池',
+    'basement',
+    batteryGroup,
+    () => {
+      batteryGroup.visible = false;
+      metaState.collectedParts.add('quest_battery');
+      return {
+        title: '拾取关键道具：高能备用电池组',
+        message:
+          '指示灯满格发亮的工业级锂电模块，正好可以接入地下室实验终端的主供电槽。',
+        collectQuestItemId: 'quest_battery',
+      };
+    }
+  );
 
   // Merge all static Basement meshes into a single draw call
   mergeStaticGroupToSingleMesh(group, outlines, 'BasementMergedStaticMesh');

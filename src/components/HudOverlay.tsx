@@ -9,13 +9,16 @@ import {
   Image as ImageIcon,
   Monitor,
   SlidersHorizontal,
+  Sparkles,
   Zap,
 } from 'lucide-react';
 import type {
   BasementPartId,
+  BasementQuestItemId,
   HitFeedbackPayload,
   InteractResult,
   InventorySnapshot,
+  MainQuestStage,
   RoomId,
   ViewMode,
 } from '../game/types';
@@ -29,6 +32,8 @@ interface HudOverlayProps {
   totalClues: number;
   collectedParts: BasementPartId[];
   adapterCrafted: boolean;
+  mainQuestStage: MainQuestStage;
+  collectedQuestItems: BasementQuestItemId[];
   currentStoryLabel: string;
   realityAlert: string | null;
   isPointerLocked: boolean;
@@ -57,6 +62,11 @@ const PART_ITEMS: { id: BasementPartId; shortLabel: string }[] = [
   { id: 'part_oscillator', shortLabel: '晶振' },
 ];
 
+const QUEST_ITEMS: { id: BasementQuestItemId; shortLabel: string }[] = [
+  { id: 'quest_keepsake', shortLabel: '信物' },
+  { id: 'quest_battery', shortLabel: '电池' },
+];
+
 // Shared compact semi-transparent panel style with crisp outer border stroke
 const PANEL_CLS =
   'rounded-lg border border-white/25 bg-[#150f22]/52 shadow-[0_4px_18px_rgba(8,4,16,0.32)]';
@@ -70,6 +80,8 @@ export function HudOverlay({
   totalClues,
   collectedParts,
   adapterCrafted,
+  mainQuestStage,
+  collectedQuestItems,
   currentStoryLabel,
   realityAlert,
   isPointerLocked,
@@ -135,7 +147,74 @@ export function HudOverlay({
                 </span>
               </div>
 
-              {/* Compact Objective Line */}
+              {/* Phase 1 Mainline Story Objective Row */}
+              <div className="mt-1 flex flex-wrap items-center gap-1.5 border-t border-white/15 pt-1 text-[10.5px]">
+                <Sparkles className="h-3 w-3 shrink-0 text-[#ff9ec7]" />
+                {mainQuestStage === 'open_pc_files' && (
+                  <>
+                    <span className="text-[#ffe2f0]">① 打开卧室电脑文件</span>
+                    <button
+                      type="button"
+                      onClick={onOpenComputer}
+                      className="ml-auto rounded border border-[#ff9ec7]/45 bg-[#ff8fbf]/20 px-1.5 py-0.5 text-[10px] font-medium text-[#ffd8ea] hover:bg-[#ff8fbf]/35 cursor-pointer whitespace-nowrap"
+                    >
+                      打开电脑
+                    </button>
+                  </>
+                )}
+                {mainQuestStage === 'find_basement_items' && (
+                  <>
+                    <span className="text-[#ffe2f0]">② 地下室寻信物与电池</span>
+                    <span className="flex items-center gap-1 font-mono text-[10px]">
+                      {QUEST_ITEMS.map((item) => {
+                        const got = collectedQuestItems.includes(item.id);
+                        return (
+                          <span
+                            key={item.id}
+                            className={got ? 'text-emerald-300' : 'text-[#cbb8de]'}
+                          >
+                            {got ? '✓' : '○'}
+                            {item.shortLabel}
+                          </span>
+                        );
+                      })}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => onSelectRoom('basement')}
+                      className="ml-auto rounded border border-[#ff9ec7]/45 bg-[#ff8fbf]/20 px-1.5 py-0.5 text-[10px] font-medium text-[#ffd8ea] hover:bg-[#ff8fbf]/35 cursor-pointer whitespace-nowrap"
+                    >
+                      去地下室
+                    </button>
+                  </>
+                )}
+                {mainQuestStage === 'activate_basement_terminal' && (
+                  <>
+                    <span className="text-emerald-200">③ 启动地下室实验终端 [F]</span>
+                    <button
+                      type="button"
+                      onClick={() => onSelectRoom('basement')}
+                      className="ml-auto rounded border border-emerald-300/45 bg-emerald-500/20 px-1.5 py-0.5 text-[10px] font-medium text-emerald-100 hover:bg-emerald-500/35 cursor-pointer whitespace-nowrap"
+                    >
+                      地下室终端
+                    </button>
+                  </>
+                )}
+                {mainQuestStage === 'return_to_bedroom' && (
+                  <>
+                    <span className="text-[#ffd2b5] font-medium">④ 返回卧室查看床边</span>
+                    <button
+                      type="button"
+                      onClick={() => onSelectRoom('bedroom')}
+                      className="ml-auto rounded border border-[#ffd2b5]/55 bg-[#ffb085]/85 px-1.5 py-0.5 text-[10px] font-semibold text-[#1c132b] hover:bg-[#ffc3a1] cursor-pointer whitespace-nowrap"
+                    >
+                      回卧室
+                    </button>
+                  </>
+                )}
+              </div>
+
+              {/* Compact Adapter Parts / Host Progress Line */}
               <div className="mt-1 flex flex-wrap items-center gap-1.5 border-t border-white/15 pt-1 text-[10.5px]">
                 <Cpu className="h-3 w-3 shrink-0 text-[#ffb88c]" />
                 {!adapterCrafted ? (

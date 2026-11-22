@@ -24,6 +24,13 @@ import { buildApartmentStructure } from './rooms/buildStructure';
 import { createGlitchCat, type GlitchCatRig } from './entities/buildGlitchCat';
 import { createProtagonist, type ProtagonistRig } from './entities/buildProtagonist';
 import {
+  VrmAvatarController,
+  type HandGraspPreset,
+  type RightHandIkOptions,
+  type VrmAvatarStatusSnapshot,
+} from './vrm/VrmAvatarController';
+import type { LocalAssetSlot } from './vrm/localAssetDb';
+import {
   buildToyGunMesh,
   createHeldPaperNoteMesh,
   createPaperAirplaneRig,
@@ -47,7 +54,9 @@ import {
   ROOM_PRESETS,
   type AtmosphereMode,
   type BasementPartId,
+  type BasementQuestItemId,
   type CatDialogueLine,
+  type DoorController,
   type HitFeedbackPayload,
   type InteractableTarget,
   type InteractResult,
@@ -283,6 +292,7 @@ export interface EngineCallbacks {
   onToggleInventory?: () => void;
   onOpenPaperAirplaneNote?: () => void;
   onHitFeedback?: (hit: HitFeedbackPayload) => void;
+  onGlitchCutsceneProgress?: (progress: number | null) => void;
 }
 
 export class ApartmentEngine {
@@ -436,11 +446,38 @@ export class ApartmentEngine {
   private nonEuclidFisheye = 0;
   private nonEuclidLoopCooldown = 0;
 
-  // Articulated Protagonist Character Rig (with 5-fingered hands) & Bedroom Floor Material handle
+  // Articulated Protagonist Character Rig (with 5-fingered hands) & Custom VRM Avatar Controller
   private protagonist!: ProtagonistRig;
+  private vrmAvatar!: VrmAvatarController;
+  private vrmStatusListeners = new Set<(status: VrmAvatarStatusSnapshot) => void>();
+  private thirdPersonPreview = false;
+  private readonly playerMoveDirWorld = new THREE.Vector3();
+  private readonly chaseTargetScratch = new THREE.Vector3();
+  private readonly doorIkWorldPosScratch = new THREE.Vector3();
+  private readonly doorIkProbePosScratch = new THREE.Vector3();
+  private readonly doorIkShoulderScratch = new THREE.Vector3();
+  private activeDoorIk: {
+    door: DoorController;
+    anchor: THREE.Object3D;
+    startAngle: number;
+    targetAngle: number;
+    phase: 'reaching' | 'following' | 'releasing';
+    elapsed: number;
+    weight: number;
+  } | null = null;
+  private manualPropIkActive = false;
+  private readonly heroinePlayerEyeScratch = new THREE.Vector3();
+  private glitchCutscene: {
+    elapsed: number;
+    duration: number;
+    baseYaw: number;
+    basePitch: number;
+    onComplete?: () => void;
+  } | null = null;
   private bedroomFloorMat: THREE.MeshStandardMaterial | null = null;
   private playerMovingThisFrame = false;
   private playerWalkSpeedThisFrame = 2.85;
+  private playerActualSpeedThisFrame = 0;
 
   // Stray Glitch Cat state
   private glitchCat!: GlitchCatRig;
@@ -676,6 +713,15 @@ export class ApartmentEngine {
     // Build articulated protagonist AFTER collectRaycastTargets() so hands/body never block interaction raycasting
     this.protagonist = createProtagonist(this.uniforms, this.outlines);
     this.scene.add(this.protagonist.root);
+
+    // Build local VRM + Mixamo FBX avatar controller & automatically restore any IndexedDB-cached files
+    this.vrmAvatar = new VrmAvatarController((status) => {
+      this.vrmStatusListeners.forEach((listener) => listener(status));
+    });
+    this.scene.add(this.vrmAvatar.root);
+    this.scene.add(this.vrmAvatar.heroine.root);
+    this.scene.add(this.vrmAvatar.heroine.lookAtTarget);
+    void this.vrmAvatar.restoreFromIndexedDB();
     this.setupInventoryAndToySystem();
     this.setupDustMotes();
     this.setupVolumetricFog();
@@ -761,6 +807,7 @@ export class ApartmentEngine {
     if (this.heldToyGun) this.heldToyGun.group.visible = true;
     if (this.paperAirplaneRig) this.paperAirplaneRig.group.visible = true;
     this.protagonist?.setRenderPassMode('overview');
+    this.vrmAvatar?.setRenderPassMode('overview');
 
     // Temporarily disable frustum culling so EVERY room's VBOs & PSOs upload to VRAM at startup!
     const savedFrustumCulled: [THREE.Object3D, boolean][] = [];
@@ -823,7 +870,8 @@ export class ApartmentEngine {
     if (this.ringPool[0]) this.ringPool[0].mesh.visible = false;
     if (this.heldToyGun) this.heldToyGun.group.visible = false;
     if (this.paperAirplaneRig) this.paperAirplaneRig.group.visible = false;
-    this.protagonist?.setRenderPassMode('first-person');
+    this.protagonist?.setRenderPassMode(this.thirdPersonPreview ? 'overview' : 'first-person');
+    this.vrmAvatar?.setRenderPassMode(this.thirdPersonPreview ? 'third-person' : 'first-person');
     this.ctx.sceneManager.setCullingEnabled(prevCulling);
     this.ctx.sceneManager.updateVisibility(
       this.currentRoom,
@@ -2353,6 +2401,7 @@ export class ApartmentEngine {
       this.dustPoints.visible = false;
       this.ghostDustPoints.visible = this.settings.volumetricRays;
       this.protagonist?.setRenderPassMode('mirror');
+      this.vrmAvatar?.setRenderPassMode('mirror');
       if (silhouette) {
         silhouette.visible =
           prevSilhouetteVis || mirror.glitchBurstTimer > 0 || totalDist < 3.6;
@@ -2374,7 +2423,8 @@ export class ApartmentEngine {
     this.mirrorVisibleLastFrame = anyMirrorVisible;
     this.ghostDustPoints.visible = false;
     this.dustPoints.visible = prevDustVis;
-    this.protagonist?.setRenderPassMode('first-person');
+    this.protagonist?.setRenderPassMode(this.thirdPersonPreview ? 'overview' : 'first-person');
+    this.vrmAvatar?.setRenderPassMode(this.thirdPersonPreview ? 'third-person' : 'first-person');
     if (silhouette) {
       silhouette.visible = prevSilhouetteVis;
     }
@@ -2423,7 +2473,7 @@ export class ApartmentEngine {
   };
 
   private onKeyDown = (e: KeyboardEvent): void => {
-    if (this.inputSuspended) return;
+    if (this.inputSuspended || this.glitchCutscene) return;
     this.keys[e.code] = true;
     this.audio.unlock();
     if (this.viewMode !== 'first-person' || this.pcFocusState !== 'none') return;
@@ -2503,7 +2553,12 @@ export class ApartmentEngine {
   };
 
   private onWheel = (e: WheelEvent): void => {
-    if (this.inputSuspended || this.viewMode !== 'first-person' || this.pcFocusState !== 'none') {
+    if (
+      this.inputSuspended ||
+      this.glitchCutscene ||
+      this.viewMode !== 'first-person' ||
+      this.pcFocusState !== 'none'
+    ) {
       return;
     }
     if (Math.abs(e.deltaY) < 4) return;
@@ -2529,7 +2584,7 @@ export class ApartmentEngine {
   };
 
   private onPointerDown = (e: PointerEvent): void => {
-    if (this.inputSuspended) return;
+    if (this.inputSuspended || this.glitchCutscene) return;
     this.audio.unlock();
     if (this.viewMode !== 'first-person') return;
     this.lockedOnThisPointerDown = false;
@@ -2568,7 +2623,7 @@ export class ApartmentEngine {
   };
 
   private onPointerMove = (e: PointerEvent): void => {
-    if (this.inputSuspended || this.viewMode !== 'first-person') return;
+    if (this.inputSuspended || this.glitchCutscene || this.viewMode !== 'first-person') return;
 
     if (this.isPointerLocked) {
       this.isTeleporting = false;
@@ -3003,7 +3058,13 @@ export class ApartmentEngine {
     const isOverview = mode === 'overview';
     this.ctx.ceilingGroup.visible = !isOverview;
     this.orbitControls.enabled = isOverview;
-    this.protagonist?.setRenderPassMode(isOverview ? 'overview' : 'first-person');
+    this.protagonist?.setRenderPassMode(
+      isOverview || this.thirdPersonPreview ? 'overview' : 'first-person'
+    );
+    this.vrmAvatar?.setRenderPassMode(
+      isOverview ? 'overview' : this.thirdPersonPreview ? 'third-person' : 'first-person'
+    );
+    this.syncHeldViewModelVisibility();
 
     if (isOverview) {
       if (document.pointerLockElement === this.renderer.domElement) {
@@ -3662,9 +3723,38 @@ export class ApartmentEngine {
   }
 
   public resetBasementParts(): void {
-    this.ctx.metaState.collectedParts.clear();
-    for (const key of Object.keys(this.ctx.metaState.partMeshes)) {
+    const adapterPartIds: BasementPartId[] = [
+      'part_pcie_card',
+      'part_photodiode',
+      'part_oscillator',
+    ];
+    for (const key of adapterPartIds) {
+      this.ctx.metaState.collectedParts.delete(key);
       const mesh = this.ctx.metaState.partMeshes[key];
+      if (mesh) mesh.visible = true;
+    }
+  }
+
+  public setBasementQuestItemCollected(
+    itemId: BasementQuestItemId,
+    collected: boolean
+  ): void {
+    if (collected) {
+      this.ctx.metaState.collectedParts.add(itemId);
+    } else {
+      this.ctx.metaState.collectedParts.delete(itemId);
+    }
+    const mesh = this.ctx.metaState.partMeshes[itemId];
+    if (mesh) {
+      mesh.visible = !collected;
+    }
+  }
+
+  public resetBasementQuestItems(): void {
+    const questIds: BasementQuestItemId[] = ['quest_keepsake', 'quest_battery'];
+    for (const id of questIds) {
+      this.ctx.metaState.collectedParts.delete(id);
+      const mesh = this.ctx.metaState.partMeshes[id];
       if (mesh) mesh.visible = true;
     }
   }
@@ -3997,6 +4087,7 @@ export class ApartmentEngine {
   }
 
   private updateHoverRaycast(ndc: THREE.Vector2): void {
+    this.raycaster.far = this.thirdPersonPreview ? 5.2 : 4.2;
     this.raycaster.setFromCamera(ndc, this.camera);
     const combined = this.raycastScratchTargets;
     combined.length = 0;
@@ -4056,7 +4147,17 @@ export class ApartmentEngine {
     if (!this.hoveredTarget) return;
     this.protagonist?.triggerHandReach(1.0);
     const targetId = this.hoveredTarget.id;
+
+    // Detect if the player pressed [F] on an interactive room or cabinet door to trigger Right-Hand IK
+    const matchedDoor = this.ctx.doors.find((d) => d.id === targetId);
+    const preInteractAngle = matchedDoor ? matchedDoor.currentAngle : 0;
+
     const res = this.hoveredTarget.onInteract();
+
+    if (matchedDoor && matchedDoor.handleAnchors && matchedDoor.handleAnchors.length > 0) {
+      this.startDoorHandleIk(matchedDoor, preInteractAngle);
+    }
+
     if (res) {
       if (res.pickupItemId) {
         this.collectWorldInventoryItem(res.pickupItemId, targetId);
@@ -4068,19 +4169,211 @@ export class ApartmentEngine {
     }
   }
 
+  private startDoorHandleIk(door: DoorController, startAngle: number): void {
+    if (!door.handleAnchors || door.handleAnchors.length === 0) return;
+    door.pivot.updateMatrixWorld(true);
+
+    // Choose whichever side of the door lever handle is closest to the character's right shoulder/chest
+    if (!this.vrmAvatar?.getRightShoulderWorldPos(this.doorIkShoulderScratch)) {
+      this.doorIkShoulderScratch.set(
+        this.playerFeetPos.x,
+        this.playerFeetPos.y + 1.18,
+        this.playerFeetPos.z
+      );
+    }
+
+    let bestAnchor = door.handleAnchors[0];
+    let bestDistSq = Infinity;
+    for (let i = 0; i < door.handleAnchors.length; i++) {
+      const candidate = door.handleAnchors[i];
+      candidate.getWorldPosition(this.doorIkProbePosScratch);
+      const dSq = this.doorIkProbePosScratch.distanceToSquared(this.doorIkShoulderScratch);
+      if (dSq < bestDistSq) {
+        bestDistSq = dSq;
+        bestAnchor = candidate;
+      }
+    }
+
+    // Only initiate physical reach if within reasonable interaction distance (< 2.35m)
+    if (bestDistSq > 2.35 * 2.35) return;
+
+    this.activeDoorIk = {
+      door,
+      anchor: bestAnchor,
+      startAngle,
+      targetAngle: door.isOpen ? door.openAngle : door.closedAngle,
+      phase: 'reaching',
+      elapsed: 0,
+      weight: this.activeDoorIk ? this.activeDoorIk.weight : 0,
+    };
+  }
+
+  private updateDoorHandleIk(dt: number): void {
+    if (!this.activeDoorIk || this.manualPropIkActive) return;
+
+    const state = this.activeDoorIk;
+    state.elapsed += dt;
+
+    // Refresh door leaf matrix and read live world-space handle position
+    state.door.pivot.updateMatrixWorld(true);
+    state.anchor.getWorldPosition(this.doorIkWorldPosScratch);
+
+    if (!this.vrmAvatar?.getRightShoulderWorldPos(this.doorIkShoulderScratch)) {
+      this.doorIkShoulderScratch.set(
+        this.playerFeetPos.x,
+        this.playerFeetPos.y + 1.18,
+        this.playerFeetPos.z
+      );
+    }
+    const shoulderToHandleDist = this.doorIkShoulderScratch.distanceTo(
+      this.doorIkWorldPosScratch
+    );
+
+    const totalSwing = Math.max(0.24, Math.abs(state.targetAngle - state.startAngle));
+    const swung = Math.abs(state.door.currentAngle - state.startAngle);
+    const swingProgress = swung / totalSwing;
+
+    if (state.phase === 'reaching') {
+      state.weight = THREE.MathUtils.damp(state.weight, 1.0, 20.0, dt);
+      if (state.weight >= 0.86 || state.elapsed >= 0.16) {
+        state.phase = 'following';
+      }
+    } else if (state.phase === 'following') {
+      state.weight = THREE.MathUtils.damp(state.weight, 1.0, 18.0, dt);
+
+      // Release once door has swung open/closed past a natural angle, or handle swings out of comfortable arm reach
+      const reachedReleaseAngle = swingProgress >= 0.58 && state.elapsed >= 0.34;
+      const outOfArmReach = shoulderToHandleDist > 1.06 && state.elapsed >= 0.24;
+      const timedOut = state.elapsed >= 1.25;
+      if (reachedReleaseAngle || outOfArmReach || timedOut) {
+        state.phase = 'releasing';
+      }
+    } else {
+      // Smoothly lower IK weight back to 0 to retract the right arm naturally
+      state.weight = THREE.MathUtils.damp(state.weight, 0.0, 9.5, dt);
+      if (state.weight < 0.015) {
+        this.activeDoorIk = null;
+        this.vrmAvatar?.setRightHandIK(null, 0);
+        this.vrmAvatar?.setRightHandGrasp(0, 'relaxed');
+        return;
+      }
+    }
+
+    this.vrmAvatar?.setRightHandIK(this.doorIkWorldPosScratch, state.weight, {
+      palmBackOffset: 0.042,
+    });
+    this.vrmAvatar?.setRightHandGrasp(state.weight * 0.88, 'door');
+  }
+
   private applyCameraFromPlayer(): void {
+    if (this.glitchCutscene) {
+      const g = this.glitchCutscene;
+      const p = THREE.MathUtils.clamp(g.elapsed / g.duration, 0, 1);
+      const t = g.elapsed;
+
+      // Envelope: quick ramp in, strong dizzy sway through middle, gentle settle at end
+      const rampIn = THREE.MathUtils.smoothstep(p, 0.0, 0.14);
+      const rampOut = 1.0 - THREE.MathUtils.smoothstep(p, 0.78, 1.0);
+      const swayEnv = rampIn * (0.28 + 0.72 * rampOut);
+
+      // Smoothly tilt head downward toward the floor as vertigo deepens, easing slightly near recovery
+      const headDrop =
+        THREE.MathUtils.smoothstep(p, 0.08, 0.76) *
+        (1.0 - 0.34 * THREE.MathUtils.smoothstep(p, 0.80, 1.0));
+      const targetDownPitch = THREE.MathUtils.lerp(g.basePitch, -0.72, headDrop);
+
+      // Multi-frequency dizzy sway + subtle high-frequency glitch tremor
+      const glitchJolt =
+        (p > 0.10 && p < 0.24) || (p > 0.44 && p < 0.62) || (p > 0.74 && p < 0.84)
+          ? Math.sin(t * 48.0) * 0.022 * swayEnv
+          : 0;
+      const swayYaw =
+        (Math.sin(t * 2.55) * 0.18 + Math.sin(t * 5.2) * 0.055) * swayEnv + glitchJolt;
+      const swayPitch = Math.cos(t * 3.1) * 0.075 * swayEnv;
+      const swayRoll =
+        (Math.sin(t * 2.15 + 0.4) * 0.22 + Math.cos(t * 4.7) * 0.055) * swayEnv;
+
+      // Subtle knee sag & sideways stagger during peak vertigo
+      const kneeSag = -0.14 * THREE.MathUtils.smoothstep(p, 0.12, 0.72) * (1.0 - 0.5 * THREE.MathUtils.smoothstep(p, 0.78, 1.0));
+      const staggerX = Math.sin(t * 2.3) * 0.055 * swayEnv;
+      const staggerZ = Math.cos(t * 1.9) * 0.045 * swayEnv;
+
+      this.camera.position.set(
+        this.playerFeetPos.x + staggerX,
+        this.playerFeetPos.y + 1.62 + kneeSag,
+        this.playerFeetPos.z + staggerZ
+      );
+      this.camera.rotation.set(
+        THREE.MathUtils.clamp(targetDownPitch + swayPitch, -1.25, 0.65),
+        g.baseYaw + swayYaw,
+        swayRoll,
+        'YXZ'
+      );
+      return;
+    }
+
+    const clampedPitch = THREE.MathUtils.clamp(
+      this.pitch + this.camRecoilPitch,
+      -1.42,
+      1.42
+    );
+
+    if (
+      this.thirdPersonPreview &&
+      this.viewMode === 'first-person' &&
+      this.pcFocusState === 'none'
+    ) {
+      const chasePitch = THREE.MathUtils.clamp(this.pitch, -0.78, 0.48);
+      const targetX = this.playerFeetPos.x;
+      const targetY = this.playerFeetPos.y + 1.38;
+      const targetZ = this.playerFeetPos.z;
+      this.chaseTargetScratch.set(targetX, targetY, targetZ);
+
+      const desiredDist = 2.05;
+      const cosP = Math.cos(chasePitch);
+      const backX = Math.sin(this.yaw) * cosP;
+      const backY = -Math.sin(chasePitch);
+      const backZ = Math.cos(this.yaw) * cosP;
+
+      // Walk outward in small steps against apartment collision boxes so third-person camera stays inside rooms
+      let camX = targetX;
+      let camZ = targetZ;
+      const steps = 5;
+      const stepDx = (backX * desiredDist) / steps;
+      const stepDz = (backZ * desiredDist) / steps;
+      for (let i = 0; i < steps; i++) {
+        const nextX = camX + stepDx;
+        const nextZ = camZ + stepDz;
+        const resolved = this.collisions.resolveMovement(
+          camX,
+          camZ,
+          nextX,
+          nextZ,
+          this.playerFeetPos.y
+        );
+        camX = resolved.x;
+        camZ = resolved.z;
+        const blockedSq = (resolved.x - nextX) ** 2 + (resolved.z - nextZ) ** 2;
+        if (blockedSq > 1e-4) break;
+      }
+
+      const camY = THREE.MathUtils.clamp(
+        targetY + backY * desiredDist + 0.14,
+        this.playerFeetPos.y + 0.42,
+        this.playerFeetPos.y + 2.45
+      );
+      this.camera.position.set(camX, camY, camZ);
+      this.camera.lookAt(this.chaseTargetScratch);
+      return;
+    }
+
     const bob = Math.sin(this.headBobPhase) * 0.022;
     this.camera.position.set(
       this.playerFeetPos.x,
       this.playerFeetPos.y + 1.62 + bob,
       this.playerFeetPos.z
     );
-    this.camera.rotation.set(
-      THREE.MathUtils.clamp(this.pitch + this.camRecoilPitch, -1.42, 1.42),
-      this.yaw,
-      0,
-      'YXZ'
-    );
+    this.camera.rotation.set(clampedPitch, this.yaw, 0, 'YXZ');
   }
 
   private afterDraw(cb: () => void): void {
@@ -5031,7 +5324,31 @@ export class ApartmentEngine {
           this.applyCameraFromPlayer();
         }
       } else {
-        if (this.inputSuspended) {
+        if (this.glitchCutscene) {
+          this.playerMovingThisFrame = false;
+          this.playerActualSpeedThisFrame = 0;
+          this.audio.tickFootsteps(dt, false, this.currentRoom);
+          this.glitchCutscene.elapsed += dt;
+          const progress = Math.min(
+            1,
+            this.glitchCutscene.elapsed / this.glitchCutscene.duration
+          );
+          this.callbacks.onGlitchCutsceneProgress?.(progress);
+          if (progress >= 1) {
+            const onComplete = this.glitchCutscene.onComplete;
+            this.yaw = this.glitchCutscene.baseYaw;
+            this.pitch = THREE.MathUtils.clamp(
+              THREE.MathUtils.lerp(this.glitchCutscene.basePitch, -0.44, 0.66),
+              -0.85,
+              0.25
+            );
+            this.glitchCutscene = null;
+            this.keys = {};
+            this.camera.rotation.z = 0;
+            this.callbacks.onGlitchCutsceneProgress?.(null);
+            onComplete?.();
+          }
+        } else if (this.inputSuspended) {
           this.audio.tickFootsteps(dt, false, this.currentRoom);
         } else if (this.isTeleporting) {
           this.playerFeetPos.x = THREE.MathUtils.damp(
@@ -5082,21 +5399,36 @@ export class ApartmentEngine {
             _move.addScaledVector(_fwd, moveF);
             _move.addScaledVector(_right, moveS);
             if (_move.lengthSq() > 1e-4) {
-              _move.normalize().multiplyScalar(speed * dt);
+              _move.normalize();
+              this.playerMoveDirWorld.copy(_move);
+              _move.multiplyScalar(speed * dt);
+            } else {
+              this.playerMoveDirWorld.set(0, 0, 0);
             }
 
             // Update MiSide-style raycast push doors BEFORE resolving movement collisions so doorway opens cleanly!
             this.updateRoomDoorsPhysics(dt, true);
 
+            const prevX = this.playerFeetPos.x;
+            const prevZ = this.playerFeetPos.z;
             const resolved = this.collisions.resolveMovement(
-              this.playerFeetPos.x,
-              this.playerFeetPos.z,
-              this.playerFeetPos.x + _move.x,
-              this.playerFeetPos.z + _move.z,
+              prevX,
+              prevZ,
+              prevX + _move.x,
+              prevZ + _move.z,
               this.playerFeetPos.y
             );
             this.playerFeetPos.x = resolved.x;
             this.playerFeetPos.z = resolved.z;
+
+            // True resolved horizontal ground speed & direction (prevents foot sliding on walls/corners)
+            const stepDx = resolved.x - prevX;
+            const stepDz = resolved.z - prevZ;
+            const stepDist = Math.hypot(stepDx, stepDz);
+            this.playerActualSpeedThisFrame = dt > 1e-5 ? stepDist / dt : 0;
+            if (stepDist > 1e-4) {
+              this.playerMoveDirWorld.set(stepDx / stepDist, 0, stepDz / stepDist);
+            }
 
             const floorY = this.collisions.getFloorHeightAt(
               this.playerFeetPos.x,
@@ -5112,6 +5444,8 @@ export class ApartmentEngine {
             this.headBobPhase += dt * (speed * 3.1);
           } else {
             _move.set(0, 0, 0);
+            this.playerMoveDirWorld.set(0, 0, 0);
+            this.playerActualSpeedThisFrame = 0;
             this.updateRoomDoorsPhysics(dt, false);
 
             const floorY = this.collisions.getFloorHeightAt(
@@ -5147,13 +5481,14 @@ export class ApartmentEngine {
         }
 
         // Snappy center-crosshair interaction raycast (always matches center reticle dot!)
-        if (!this.inputSuspended && elapsed - this.lastHoverCheck > 0.035) {
+        if (!this.inputSuspended && !this.glitchCutscene && elapsed - this.lastHoverCheck > 0.035) {
           this.lastHoverCheck = elapsed;
           this.updateHoverRaycast(_centerNDC);
         }
       }
     } else {
       this.playerMovingThisFrame = false;
+      this.playerActualSpeedThisFrame = 0;
       _move.set(0, 0, 0);
       this.updateRoomDoorsPhysics(dt, false);
       this.orbitControls.update();
@@ -5166,6 +5501,7 @@ export class ApartmentEngine {
       (this.pcFocusState !== 'none' || this.inputSuspended || this.isTeleporting)
     ) {
       this.playerMovingThisFrame = false;
+      this.playerActualSpeedThisFrame = 0;
       _move.set(0, 0, 0);
       this.updateRoomDoorsPhysics(dt, false);
     }
@@ -5173,16 +5509,46 @@ export class ApartmentEngine {
     // 3.4 Non-Euclidean Entryway Corridor contraction & seamless Entryway loop-back
     this.updateNonEuclidCorridor(dt);
 
-    // 3.5 Update articulated protagonist character rig (body, legs, 5-fingered hands & head)
+    // 3.45 Update live Door-Handle Right-Hand IK target & weight BEFORE VRM mixer -> IK -> vrm.update
+    this.updateDoorHandleIk(dt);
+
+    // 3.5 Update articulated protagonist character rig or custom local VRM avatar
+    const hideAvatar = this.viewMode === 'first-person' && this.pcFocusState !== 'none';
+    const hasCustomVrm = this.vrmAvatar?.hasVrm() ?? false;
     this.protagonist?.update(dt, elapsed, {
       feetPos: this.playerFeetPos,
       yaw: this.yaw,
       pitch: this.pitch,
       walkSpeed: this.playerWalkSpeedThisFrame,
       isMoving: this.playerMovingThisFrame,
-      viewMode: this.viewMode,
-      hideAll: this.viewMode === 'first-person' && this.pcFocusState !== 'none',
+      viewMode: this.thirdPersonPreview ? 'overview' : this.viewMode,
+      hideAll: hideAvatar || hasCustomVrm,
     });
+    this.vrmAvatar?.update(dt, elapsed, {
+      feetPos: this.playerFeetPos,
+      yaw: this.yaw,
+      pitch: this.pitch,
+      walkSpeed: this.playerWalkSpeedThisFrame,
+      actualSpeed: this.playerActualSpeedThisFrame,
+      isMoving: this.playerMovingThisFrame,
+      moveDirWorld: this.playerMoveDirWorld,
+      viewMode: this.viewMode,
+      thirdPersonPreview: this.thirdPersonPreview,
+      hideAll: hideAvatar,
+    });
+
+    // 3.55 Update Heroine VRM (seated on bedroom bed edge + LookAt eye tracking + breathing & blinking)
+    this.heroinePlayerEyeScratch.set(
+      this.playerFeetPos.x,
+      this.playerFeetPos.y + 1.56,
+      this.playerFeetPos.z
+    );
+    this.vrmAvatar?.heroine.update(
+      dt,
+      elapsed,
+      this.heroinePlayerEyeScratch,
+      this.currentRoom
+    );
 
     // 3a. Persistent ambient tabletop physics for pens, trinkets & small desk/table props
     this.updateAmbientTabletopPhysics(dt, elapsed);
@@ -5206,6 +5572,9 @@ export class ApartmentEngine {
         // Immediately refresh directional shadows on the exact frame a newly entered room appears!
         this.shadowDirty = true;
         this.shadowImmediate = true;
+      }
+      if (this.vrmAvatar?.heroine.root.visible) {
+        this.vrmAvatar.heroine.root.visible = this.ctx.sceneManager.isRoomVisible('bedroom');
       }
     }
 
@@ -6069,10 +6438,118 @@ export class ApartmentEngine {
   private syncHeldViewModelVisibility(): void {
     const equipped = this.getEquippedItem();
     const canShow =
-      this.viewMode === 'first-person' && this.pcFocusState === 'none' && equipped !== null;
+      this.viewMode === 'first-person' &&
+      !this.thirdPersonPreview &&
+      this.pcFocusState === 'none' &&
+      equipped !== null;
     this.heldItemAnchor.visible = canShow;
     this.heldToyGun.group.visible = canShow && equipped?.id === 'toy_gun';
     this.heldPaperNote.visible = canShow && equipped?.id === 'paper_airplane_note';
+  }
+
+  public getLocalAvatarStatus(): VrmAvatarStatusSnapshot {
+    return this.vrmAvatar.getStatus();
+  }
+
+  public subscribeLocalAvatarStatus(
+    listener: (status: VrmAvatarStatusSnapshot) => void
+  ): () => void {
+    this.vrmStatusListeners.add(listener);
+    listener(this.vrmAvatar.getStatus());
+    return () => {
+      this.vrmStatusListeners.delete(listener);
+    };
+  }
+
+  public async importLocalAvatarFile(slot: LocalAssetSlot, file: File): Promise<void> {
+    await this.vrmAvatar.importLocalFile(slot, file);
+  }
+
+  public async removeLocalAvatarSlot(slot: LocalAssetSlot): Promise<void> {
+    await this.vrmAvatar.removeSlot(slot);
+  }
+
+  public async clearLocalAvatarCache(): Promise<void> {
+    await this.vrmAvatar.clearAll();
+  }
+
+  public setThirdPersonPreview(enabled: boolean): void {
+    this.thirdPersonPreview = enabled;
+    const isOverview = this.viewMode === 'overview';
+    this.protagonist?.setRenderPassMode(
+      isOverview || enabled ? 'overview' : 'first-person'
+    );
+    this.vrmAvatar?.setRenderPassMode(
+      isOverview ? 'overview' : enabled ? 'third-person' : 'first-person'
+    );
+    this.syncHeldViewModelVisibility();
+    if (!isOverview && this.pcFocusState === 'none') {
+      this.applyCameraFromPlayer();
+    }
+  }
+
+  /**
+   * Public Right-Hand Two-Bone IK hook for mounting flashlights, tools, or held props.
+   */
+  public setRightHandIK(
+    targetWorldPos: THREE.Vector3 | null,
+    weight: number,
+    options?: RightHandIkOptions
+  ): void {
+    this.manualPropIkActive = Boolean(targetWorldPos) && weight > 0.001;
+    if (this.manualPropIkActive) {
+      this.activeDoorIk = null;
+    }
+    this.vrmAvatar?.setRightHandIK(targetWorldPos, weight, options);
+  }
+
+  /**
+   * Public Right-Hand Finger Grasp hook ('relaxed' | 'door' | 'hold' | 'pistol').
+   */
+  public setRightHandGrasp(graspAmount: number, preset: HandGraspPreset = 'hold'): void {
+    this.vrmAvatar?.setRightHandGrasp(graspAmount, preset);
+  }
+
+  /**
+   * Spawns and seats the Heroine VRM on the bedroom bed-edge anchor facing the door.
+   */
+  public spawnHeroineOnBedroomBed(): void {
+    this.vrmAvatar?.spawnHeroineOnBedroomBed();
+  }
+
+  public setHeroineSpawned(spawned: boolean): void {
+    this.vrmAvatar?.setHeroineSpawned(spawned);
+  }
+
+  /**
+   * Triggers the 3.5-second Basement Terminal Glitch & Dizzy Cutscene.
+   * Immediately spawns the Heroine seated on the bedroom bed edge at t = 0.
+   */
+  public triggerBasementGlitchCutscene(onComplete?: () => void): void {
+    // Spawn Heroine immediately at the exact moment the glitch triggers
+    this.vrmAvatar?.spawnHeroineOnBedroomBed();
+
+    if (this.glitchCutscene) return;
+    if (this.viewMode !== 'first-person') {
+      this.setViewMode('first-person');
+    }
+    this.isTeleporting = false;
+    this.teleportTargetRoom = null;
+    this.isDraggingLook = false;
+    this.keys = {};
+    this.hoveredTarget = null;
+    this.callbacks.onHoverTarget(null);
+    this.triggerRoomEntryFlicker('basement', 1.45);
+    this.audio.playInteract(true);
+
+    this.glitchCutscene = {
+      elapsed: 0,
+      duration: 3.5,
+      baseYaw: this.yaw,
+      basePitch: this.pitch,
+      onComplete,
+    };
+    this.callbacks.onGlitchCutsceneProgress?.(0);
   }
 
   private emitHitFeedback(kind: HitFeedbackPayload['kind'], label?: string): void {
@@ -6725,6 +7202,8 @@ export class ApartmentEngine {
     dom.removeEventListener('webglcontextlost', this.onContextLost);
     dom.removeEventListener('webglcontextrestored', this.onContextRestored);
 
+    this.vrmStatusListeners.clear();
+    this.vrmAvatar?.dispose();
     this.audio.dispose();
     this.orbitControls.dispose();
     this.postRig?.dispose();

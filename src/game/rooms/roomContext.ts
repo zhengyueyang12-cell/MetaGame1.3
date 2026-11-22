@@ -782,6 +782,29 @@ export function createRoomBuildContext(
     // Merge all door-leaf panels, moldings & hardware into 1 single multi-material draw call
     mergeDynamicSubtreeMeshes(pivot, outlines, `${id}_leaf_merged`);
 
+    // Attach world-tracked handle anchor nodes AFTER mesh merge so both sides of the lever handle
+    // always follow the rotating door leaf in world space for Right-Hand IK grasping
+    const handleAnchors: THREE.Object3D[] = [];
+    for (const side of [-1, 1] as const) {
+      const anchor = new THREE.Object3D();
+      anchor.name = `${id}_handle_anchor_${side > 0 ? 'pos' : 'neg'}`;
+      if (isAlongZ) {
+        anchor.position.set(
+          side * (doorThick / 2 + 0.044),
+          1.02,
+          hOffset - dirSign * 0.044
+        );
+      } else {
+        anchor.position.set(
+          hOffset - dirSign * 0.044,
+          1.02,
+          side * (doorThick / 2 + 0.044)
+        );
+      }
+      pivot.add(anchor);
+      handleAnchors.push(anchor);
+    }
+
     const colliderId = `door_col_${id}`;
     addBoxCollider(
       colliderId,
@@ -813,6 +836,7 @@ export function createRoomBuildContext(
       audioPlayedForPush: false,
       closeThudPlayed: false,
       playAudio: playDoorAudio,
+      handleAnchors,
     };
     doors.push(ctrl);
 
@@ -934,6 +958,25 @@ export function createRoomBuildContext(
     // Merge cabinet door panel, raised Shaker moldings & handle into 1 single draw call
     mergeDynamicSubtreeMeshes(pivot, outlines, `${id}_cab_merged`);
 
+    // Attach world-tracked cabinet handle anchor after merge for Right-Hand IK interaction
+    const cabHandleAnchor = new THREE.Object3D();
+    cabHandleAnchor.name = `${id}_cab_handle_anchor`;
+    const handleSpanFromHinge = -hingeSide * Math.max(0.06, width * 0.86);
+    if (facingAxis === 'x') {
+      cabHandleAnchor.position.set(
+        facingSign * (doorDepth * 0.5 + 0.028),
+        0,
+        handleSpanFromHinge
+      );
+    } else {
+      cabHandleAnchor.position.set(
+        handleSpanFromHinge,
+        0,
+        facingSign * (doorDepth * 0.5 + 0.028)
+      );
+    }
+    pivot.add(cabHandleAnchor);
+
     // 4. Compute exact outward swing direction around the Y axis
     const openSign: 1 | -1 =
       explicitOpenSign ??
@@ -949,6 +992,7 @@ export function createRoomBuildContext(
       closedAngle: 0,
       openAngle: openSign * openAngleMag,
       currentAngle: 0,
+      handleAnchors: [cabHandleAnchor],
     };
     doors.push(ctrl);
 

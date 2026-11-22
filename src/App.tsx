@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { GlitchCatDialogue } from './components/GlitchCatDialogue';
+import { GlitchDizzyOverlay } from './components/GlitchDizzyOverlay';
 import { HudOverlay } from './components/HudOverlay';
 import { InventoryModal, type InventoryModalTab } from './components/InventoryModal';
+import { LocalAvatarLoaderPanel } from './components/LocalAvatarLoaderPanel';
 import { PaperAirplaneNoteModal } from './components/PaperAirplaneNoteModal';
 import { ArcadeCabinetStage } from './components/arcade/ArcadeCabinetStage';
 import { Act5CinemaFinale } from './components/vn/Act5CinemaFinale';
@@ -28,15 +30,19 @@ import { ApartmentEngine, type PcScreenRect } from './game/ApartmentEngine';
 import type {
   AtmosphereMode,
   BasementPartId,
+  BasementQuestItemId,
   CatDialogueLine,
   HitFeedbackPayload,
   InteractResult,
   InventorySnapshot,
+  MainQuestStage,
   PipelineSettings,
   RealityEffect,
   RoomId,
   ViewMode,
 } from './game/types';
+import type { LocalAssetSlot } from './game/vrm/localAssetDb';
+import type { VrmAvatarStatusSnapshot } from './game/vrm/VrmAvatarController';
 import type {
   DualChannelTurn,
   GameSettings,
@@ -57,6 +63,8 @@ const STORAGE_SAVES_KEY = 'twilight_ark_v1_saves';
 const STORAGE_PARTS_KEY = 'twilight_ark_v1_parts';
 const STORAGE_CRAFTED_KEY = 'twilight_ark_v1_crafted';
 const STORAGE_COPIED_KEY = 'twilight_ark_v1_copied';
+const STORAGE_MAIN_QUEST_KEY = 'twilight_ark_v1_main_quest';
+const STORAGE_QUEST_ITEMS_KEY = 'twilight_ark_v1_quest_items';
 
 const ALL_BASEMENT_PARTS: BasementPartId[] = [
   'part_pcie_card',
@@ -188,6 +196,21 @@ export default function App() {
   const [showPaperNote, setShowPaperNote] = useState(false);
   const [hitFeedback, setHitFeedback] = useState<HitFeedbackPayload | null>(null);
   const hitTimerRef = useRef<number | null>(null);
+  const [thirdPersonPreview, setThirdPersonPreview] = useState(false);
+  const [avatarStatus, setAvatarStatus] = useState<VrmAvatarStatusSnapshot>({
+    vrmLoaded: false,
+    vrmVersion: null,
+    heroineLoaded: false,
+    heroineVersion: null,
+    heroineSitClipBound: false,
+    heroineSpawned: false,
+    assets: {},
+    boundClips: { idle: false, walk: false, run: false },
+    activeMotion: 'idle',
+    loadingSlot: null,
+    lastError: null,
+  });
+  const [glitchCutsceneProgress, setGlitchCutsceneProgress] = useState<number | null>(null);
   const [pcFocus, setPcFocus] = useState<{
     active: boolean;
     settled: boolean;
@@ -209,6 +232,12 @@ export default function App() {
   );
   const [driveCopied, setDriveCopied] = useState<boolean>(() =>
     readJson<boolean>(STORAGE_COPIED_KEY, false)
+  );
+  const [mainQuestStage, setMainQuestStage] = useState<MainQuestStage>(() =>
+    readJson<MainQuestStage>(STORAGE_MAIN_QUEST_KEY, 'open_pc_files')
+  );
+  const [collectedQuestItems, setCollectedQuestItems] = useState<BasementQuestItemId[]>(() =>
+    readJson<BasementQuestItemId[]>(STORAGE_QUEST_ITEMS_KEY, [])
   );
   const [pcView, setPcView] = useState<PcViewMode>('closed');
   const [lastPcSubView, setLastPcSubView] = useState<'vn' | 'terminal' | 'finale'>('vn');
@@ -263,6 +292,10 @@ export default function App() {
   currentSceneIdRef.current = currentSceneId;
   const lastPcSubViewRef = useRef(lastPcSubView);
   lastPcSubViewRef.current = lastPcSubView;
+  const collectedQuestItemsRef = useRef(collectedQuestItems);
+  collectedQuestItemsRef.current = collectedQuestItems;
+  const mainQuestStageRef = useRef(mainQuestStage);
+  mainQuestStageRef.current = mainQuestStage;
   const metaStateRef = useRef(metaState);
   metaStateRef.current = metaState;
 
@@ -287,6 +320,14 @@ export default function App() {
   }, [driveCopied]);
 
   useEffect(() => {
+    writeJson(STORAGE_MAIN_QUEST_KEY, mainQuestStage);
+  }, [mainQuestStage]);
+
+  useEffect(() => {
+    writeJson(STORAGE_QUEST_ITEMS_KEY, collectedQuestItems);
+  }, [collectedQuestItems]);
+
+  useEffect(() => {
     vnAudioEngine.setVolumes(vnSettings.bgmVolume, vnSettings.sfxVolume);
   }, [vnSettings.bgmVolume, vnSettings.sfxVolume]);
 
@@ -309,6 +350,16 @@ export default function App() {
     if (note) {
       setRealityAlert(note);
     }
+  }, []);
+
+  const handleInspectPcFile = useCallback(() => {
+    setMainQuestStage((prev) => {
+      if (prev !== 'open_pc_files') return prev;
+      setRealityAlert(
+        '电脑档案里留下了地下室坐标：请前往【地下室】寻找「她的心形信物」与「高能备用电池组」，随后启动实验终端。'
+      );
+      return 'find_basement_items';
+    });
   }, []);
 
   const handleLeaveComputer = useCallback(() => {
@@ -396,6 +447,68 @@ export default function App() {
           return;
         }
 
+        if (result.collectQuestItemId) {
+          const questId = result.collectQuestItemId;
+          setCollectedQuestItems((prev) => {
+            const next = prev.includes(questId) ? prev : [...prev, questId];
+            const hasKeepsake = next.includes('quest_keepsake');
+            const hasBattery = next.includes('quest_battery');
+            if (hasKeepsake && hasBattery) {
+              setMainQuestStage((stage) =>
+                stage === 'return_to_bedroom' ? stage : 'activate_basement_terminal'
+              );
+              setInspectMessage({
+                title: `${result.title} · 关键道具已集齐 (2/2)`,
+                message:
+                  '「她的心形信物」与「高能备用电池组」都已到手！现在走到地下室不锈钢实验台前，对着重型 CRT 终端按 F 启动它。',
+              });
+            } else {
+              const missing = hasKeepsake ? '高能备用电池组（实验台左前角）' : '她的心形信物（2号货架中层）';
+              setMainQuestStage((stage) =>
+                stage === 'open_pc_files' ? 'find_basement_items' : stage
+              );
+              setInspectMessage({
+                ...result,
+                title: `${result.title} (${next.length}/2)`,
+                message: `${result.message} 还差：${missing}。`,
+              });
+            }
+            return next;
+          });
+          return;
+        }
+
+        if (result.triggerBasementTerminal) {
+          const items = collectedQuestItemsRef.current;
+          const hasKeepsake = items.includes('quest_keepsake');
+          const hasBattery = items.includes('quest_battery');
+          if (!hasKeepsake || !hasBattery) {
+            const missingLabels = [
+              !hasKeepsake ? '「她的心形信物」（2号铁架中层）' : null,
+              !hasBattery ? '「高能备用电池组」（实验台左前角）' : null,
+            ].filter(Boolean);
+            setInspectMessage({
+              title: '重型实验终端 · 校验未通过',
+              message: `终端发出低沉的蜂鸣，提示缺少启动凭据：${missingLabels.join('、')}。请在地下室找齐后再按 F 启动。`,
+            });
+            return;
+          }
+
+          setInspectMessage(null);
+          vnAudioEngine.unlock();
+          vnAudioEngine.playSfx('glitch');
+          setMainQuestStage('return_to_bedroom');
+          engineRef.current?.triggerBasementGlitchCutscene(() => {
+            setInspectMessage({
+              title: '眩晕渐退 · 卧室异动',
+              message:
+                '终端过载引发了剧烈的眩晕与视觉撕裂……恢复视线后，楼上卧室似乎传来了轻微的动静。回卧室床边看看吧。',
+            });
+            setRealityAlert('空间同步完成：她似乎已经出现在卧室床沿，正静静等待着你。');
+          });
+          return;
+        }
+
         if (result.openPcAction) {
           openComputerAtActiveStage();
           return;
@@ -448,13 +561,25 @@ export default function App() {
           hitTimerRef.current = null;
         }, hit.label ? 1200 : 320);
       },
+      onGlitchCutsceneProgress: (progress) => {
+        setGlitchCutsceneProgress(progress);
+      },
     });
 
     engineRef.current = engine;
+    const unsubscribeAvatar = engine.subscribeLocalAvatarStatus((status) => {
+      setAvatarStatus(status);
+    });
 
-    // Sync initial collected parts & screen texture
+    // Sync initial collected parts, quest items, heroine spawn state & screen texture
     for (const partId of collectedPartsRef.current) {
       engine.setBasementPartCollected(partId, true);
+    }
+    for (const questId of collectedQuestItemsRef.current) {
+      engine.setBasementQuestItemCollected(questId, true);
+    }
+    if (mainQuestStageRef.current === 'return_to_bedroom') {
+      engine.spawnHeroineOnBedroomBed();
     }
     if (adapterCraftedRef.current && driveCopiedRef.current) {
       engine.updatePcScreenVisual(
@@ -471,6 +596,7 @@ export default function App() {
 
     return () => {
       window.removeEventListener('keydown', onKey);
+      unsubscribeAvatar();
       engine.dispose();
       engineRef.current = null;
     };
@@ -976,6 +1102,9 @@ export default function App() {
     setSaves(createEmptySaves());
     setVirtualFiles(INITIAL_BUREAU_FILES);
     setCollectedParts([]);
+    setCollectedQuestItems([]);
+    setMainQuestStage('open_pc_files');
+    setGlitchCutsceneProgress(null);
     setAdapterCrafted(false);
     setDriveCopied(false);
     setCompletedTerminalTasks(new Set());
@@ -997,6 +1126,8 @@ export default function App() {
       engine.exitPcFocus();
       engine.resetGlitchCat();
       engine.resetBasementParts();
+      engine.resetBasementQuestItems();
+      engine.setHeroineSpawned(false);
       engine.updatePcScreenVisual('standby');
       engine.applyRealityEffect('restore_bedroom_lamp');
       engine.applyRealityEffect('restore_basement_lights');
@@ -1054,6 +1185,38 @@ export default function App() {
   const handleRequestPointerLock = useCallback(() => {
     setViewMode('first-person');
     engineRef.current?.requestPointerLock();
+  }, []);
+
+  const handleImportLocalAvatarFile = useCallback(
+    async (slot: LocalAssetSlot, file: File) => {
+      await engineRef.current?.importLocalAvatarFile(slot, file);
+    },
+    []
+  );
+
+  const handleRemoveLocalAvatarSlot = useCallback(async (slot: LocalAssetSlot) => {
+    await engineRef.current?.removeLocalAvatarSlot(slot);
+  }, []);
+
+  const handleClearLocalAvatarCache = useCallback(async () => {
+    await engineRef.current?.clearLocalAvatarCache();
+  }, []);
+
+  const handleToggleThirdPersonPreview = useCallback(() => {
+    setThirdPersonPreview((prev) => {
+      const next = !prev;
+      if (next && viewMode !== 'first-person') {
+        setViewMode('first-person');
+        engineRef.current?.setViewMode('first-person');
+      }
+      engineRef.current?.setThirdPersonPreview(next);
+      return next;
+    });
+  }, [viewMode]);
+
+  const handleToggleHeroinePreview = useCallback(() => {
+    const currentlySpawned = engineRef.current?.getLocalAvatarStatus().heroineSpawned ?? false;
+    engineRef.current?.setHeroineSpawned(!currentlySpawned);
   }, []);
 
   const currentStoryLabel = useMemo(() => {
@@ -1188,7 +1351,7 @@ export default function App() {
       />
 
       {/* 3D Apartment HUD Overlay (visible only when not seated at the monitor) */}
-      {pcView === 'closed' && !pcFocus.active && (
+      {pcView === 'closed' && !pcFocus.active && glitchCutsceneProgress === null && (
         <HudOverlay
           currentRoom={currentRoom}
           viewMode={viewMode}
@@ -1198,6 +1361,8 @@ export default function App() {
           totalClues={18}
           collectedParts={collectedParts}
           adapterCrafted={adapterCrafted}
+          mainQuestStage={mainQuestStage}
+          collectedQuestItems={collectedQuestItems}
           currentStoryLabel={currentStoryLabel}
           realityAlert={realityAlert}
           isPointerLocked={isPointerLocked}
@@ -1210,7 +1375,10 @@ export default function App() {
           onDismissRealityAlert={() => setRealityAlert(null)}
           onOpenComputer={openComputerAtActiveStage}
           onOpenDevTools={() => setShowDevTools(true)}
-          onOpenFiles={() => setShowFiles(true)}
+          onOpenFiles={() => {
+            handleInspectPcFile();
+            setShowFiles(true);
+          }}
           onOpenGallery={() => setShowGallery(true)}
           inventory={inventory}
           hitFeedback={hitFeedback}
@@ -1234,6 +1402,22 @@ export default function App() {
           }}
         />
       )}
+
+      {/* Collapsible Local VRM + Mixamo FBX Drag-and-Drop / IndexedDB Loader Panel (Bottom-Left) */}
+      {pcView === 'closed' && !pcFocus.active && !contextLost && glitchCutsceneProgress === null && (
+        <LocalAvatarLoaderPanel
+          status={avatarStatus}
+          thirdPersonPreview={thirdPersonPreview}
+          onImportFile={handleImportLocalAvatarFile}
+          onRemoveSlot={handleRemoveLocalAvatarSlot}
+          onClearAll={handleClearLocalAvatarCache}
+          onToggleThirdPerson={handleToggleThirdPersonPreview}
+          onToggleHeroinePreview={handleToggleHeroinePreview}
+        />
+      )}
+
+      {/* Full-Screen 3.5s Basement Terminal Glitch & Vertigo Cutscene Overlay */}
+      <GlitchDizzyOverlay progress={glitchCutsceneProgress} />
 
       <InventoryModal
         open={showInventory}
@@ -1334,7 +1518,11 @@ export default function App() {
             onStartSolder={() => setPcView('solder')}
             onCopyDriveToDesktop={handleCopyDriveToDesktop}
             onLaunchGame={handleLaunchGameFromDesktop}
-            onOpenFiles={() => setShowFiles(true)}
+            onInspectPcFile={handleInspectPcFile}
+            onOpenFiles={() => {
+              handleInspectPcFile();
+              setShowFiles(true);
+            }}
             onOpenDevTools={() => setShowDevTools(true)}
             onLeaveDesk={handleLeaveComputer}
           />
@@ -1370,7 +1558,10 @@ export default function App() {
             onRecordChoice={handleRecordChoice}
             onSceneComplete={(nextId) => enterScene(nextId)}
             onOpenSave={() => setSaveLoadModal('save')}
-            onOpenFiles={() => setShowFiles(true)}
+            onOpenFiles={() => {
+              handleInspectPcFile();
+              setShowFiles(true);
+            }}
             onOpenSettings={() => setShowSettings(true)}
             onOpenDevTools={() => setShowDevTools(true)}
             onLeaveComputer={handleLeaveComputer}
@@ -1398,7 +1589,10 @@ export default function App() {
             onRecordKeystroke={handleRecordKeystroke}
             onExportSoulSeed={handleExportSoulSeed}
             onEnterAct5Finale={() => enterScene('act5_finale')}
-            onOpenFiles={() => setShowFiles(true)}
+            onOpenFiles={() => {
+              handleInspectPcFile();
+              setShowFiles(true);
+            }}
             onOpenSave={() => setSaveLoadModal('save')}
             onOpenLoad={() => setSaveLoadModal('load')}
             onOpenBacklog={() => setShowBacklog(true)}

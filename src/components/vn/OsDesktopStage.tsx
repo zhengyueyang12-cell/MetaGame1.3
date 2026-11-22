@@ -25,6 +25,7 @@ interface OsDesktopStageProps {
   onCopyDriveToDesktop: () => void;
   onLaunchGame: () => void;
   onOpenFiles: () => void;
+  onInspectPcFile?: () => void;
   onOpenDevTools: () => void;
   onLeaveDesk: () => void;
 }
@@ -40,6 +41,7 @@ export const OsDesktopStage: React.FC<OsDesktopStageProps> = ({
   onCopyDriveToDesktop,
   onLaunchGame,
   onOpenFiles,
+  onInspectPcFile,
   onOpenDevTools,
   onLeaveDesk,
 }) => {
@@ -161,7 +163,10 @@ export const OsDesktopStage: React.FC<OsDesktopStageProps> = ({
 
           <button
             type="button"
-            onClick={onOpenFiles}
+            onClick={() => {
+              onInspectPcFile?.();
+              onOpenFiles();
+            }}
             className="group flex flex-col items-center gap-1 rounded p-1.5 text-center hover:bg-white/12 cursor-pointer"
           >
             <div className="flex h-10 w-10 items-center justify-center rounded border border-white/20 bg-[#2a4a63] shadow">
@@ -172,7 +177,10 @@ export const OsDesktopStage: React.FC<OsDesktopStageProps> = ({
 
           <button
             type="button"
-            onClick={() => setOpenMemo((v) => !v)}
+            onClick={() => {
+              onInspectPcFile?.();
+              setOpenMemo((v) => !v);
+            }}
             className="group flex flex-col items-center gap-1 rounded p-1.5 text-center hover:bg-white/12 cursor-pointer"
           >
             <div className="flex h-10 w-10 items-center justify-center rounded border border-white/20 bg-[#294057] shadow">

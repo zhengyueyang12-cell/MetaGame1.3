@@ -39,6 +39,14 @@ export type BasementPartId =
   | 'part_photodiode'
   | 'part_oscillator';
 
+export type BasementQuestItemId = 'quest_keepsake' | 'quest_battery';
+
+export type MainQuestStage =
+  | 'open_pc_files'
+  | 'find_basement_items'
+  | 'activate_basement_terminal'
+  | 'return_to_bedroom';
+
 export type RealityEffect =
   | 'power_cut_bedroom'
   | 'restore_bedroom_lamp'
@@ -107,6 +115,8 @@ export interface InteractResult {
   metaTrigger?: boolean;
   sanityDelta?: number;
   collectPartId?: BasementPartId;
+  collectQuestItemId?: BasementQuestItemId;
+  triggerBasementTerminal?: boolean;
   pickupItemId?: InventoryItemId;
   openPcAction?: boolean;
   openArcadeAction?: boolean;
@@ -133,6 +143,8 @@ export interface DoorController {
   audioPlayedForPush?: boolean;
   closeThudPlayed?: boolean;
   playAudio?: (open: boolean) => void;
+  /** World-tracked empty anchor nodes positioned at each door lever / cabinet handle */
+  handleAnchors?: THREE.Object3D[];
 }
 
 export interface RoomPreset {
